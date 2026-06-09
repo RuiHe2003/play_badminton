@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>羽毛球积分系统</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <nav id="nav">
+    <div class="nav-brand">🏸 羽毛球积分系统</div>
+    <div class="nav-links">
+      <a href="#" data-tab="home">首页</a>
+      <a href="#" data-tab="players">选手管理</a>
+      <a href="#" data-tab="matches">比赛录入</a>
+      <a href="#" data-tab="rankings">积分排名</a>
+      <a href="#" data-tab="query">赛事查询</a>
+      <a href="#" data-tab="player-query">选手查询</a>
+      <a href="#" data-tab="headtohead">对阵查询</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <!-- 首页 -->
+    <div id="tab-home" class="tab active">
+      <h2>🏸 系统概览</h2>
+      <div id="home-content"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 选手管理 -->
+    <div id="tab-players" class="tab">
+      <h2>👤 选手管理</h2>
+      <div class="card">
+        <h3>添加选手</h3>
+        <div class="form-row">
+          <input type="text" id="player-name" placeholder="选手姓名">
+          <select id="player-gender"><option value="">选择性别</option><option value="male">男</option><option value="female">女</option></select>
+          <button onclick="addPlayer()">添加</button>
+        </div>
+      </div>
+      <div class="card"><h3>选手列表</h3><div id="player-list"></div></div>
+    </div>
+
+    <!-- 比赛录入 -->
+    <div id="tab-matches" class="tab">
+      <h2>🏟️ 比赛录入</h2>
+      <div class="card" id="create-round-card">
+        <h3>📋 创建新轮次</h3>
+        <div class="form-row">
+          <select id="round-tournament"><option value="">选择赛事</option></select>
+          <input type="number" id="round-edition" placeholder="输入届数" min="1" value="1">
+          <input type="date" id="round-date">
+        </div>
+        <div id="existing-round-info" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #f6e05e;border-radius:6px;font-size:14px">
+          🔔 该赛事此届已有轮次，<a href="#" onclick="loadExistingRound();return false" style="color:#d69e2e;font-weight:600">点击此处加载已有轮次进行比分编辑</a>
+        </div>
+        <div id="participant-area">
+          <div class="form-row">
+            <strong style="min-width:60px">参赛者：</strong>
+            <select id="participant-select"><option value="">请先选择赛事</option></select>
+            <button onclick="addParticipant()">添加</button>
+          </div>
+          <div id="participant-list"></div>
+          <div class="form-row" id="round-actions" style="display:none;margin-top:8px">
+            <button onclick="createAndShowFixtures()">⚡ 生成对阵表</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="fixture-card" style="display:none">
+        <h3>🏟️ <span id="fixture-title">对阵表</span></h3>
+        <div id="fixture-form"></div>
+        <div style="margin-top:12px;text-align:right">
+          <button onclick="saveAllMatches()">💾 保存所有比分</button>
+          <span id="save-all-status" style="margin-left:8px;font-size:13px"></span>
+        </div>
+      </div>
+      <div class="card" id="live-rank-card" style="display:none">
+        <h3>📊 实时排名</h3>
+        <div id="live-rankings"></div>
+      </div>
+    </div>
+
+    <!-- 积分排名 -->
+    <div id="tab-rankings" class="tab">
+      <h2>🏆 积分排名</h2>
+      <div id="rankings-content"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 赛事查询 -->
+    <div id="tab-query" class="tab">
+      <h2>🔎 赛事查询</h2>
+      <div class="card">
+        <div class="form-row">
+          <select id="query-tournament"><option value="">全部赛事</option></select>
+          <input type="number" id="query-edition" placeholder="届数（可选）" min="1">
+          <button onclick="queryRounds()">查询</button>
+        </div>
+      </div>
+      <div id="query-results"></div>
+    </div>
+
+    <!-- 选手查询 -->
+    <div id="tab-player-query" class="tab">
+      <h2>🔍 选手查询</h2>
+      <div class="card">
+        <div class="form-row">
+          <input type="text" id="query-player-name" placeholder="输入选手姓名">
+          <button onclick="queryPlayer()">查询</button>
+        </div>
+      </div>
+      <div id="player-result"></div>
+    </div>
+
+    <!-- 对阵查询 -->
+    <div id="tab-headtohead" class="tab">
+      <h2>⚔️ 对阵查询</h2>
+      <div class="card">
+        <div class="form-row">
+          <input type="text" id="h2h-name1" placeholder="选手A姓名">
+          <input type="text" id="h2h-name2" placeholder="选手B姓名">
+          <button onclick="queryHeadToHead()">查询</button>
+        </div>
+      </div>
+      <div id="h2h-result"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
