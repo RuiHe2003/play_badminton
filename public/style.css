@@ -89,4 +89,40 @@ body:has(#tab-home.active) .container { padding: 0; }
   .nav-links { width: 100%; padding-bottom: 4px; }
   .form-row input, .form-row select { min-width: 100px; }
   .match-entry { flex-direction: column; align-items: stretch; }
+  .container { padding: 12px; }
+  h2 { font-size: 20px; }
+  .card { padding: 14px; }
+  table { font-size: 12px; }
+  th, td { padding: 6px 4px; }
+  .badge { font-size: 10px; padding: 1px 5px; }
+  .home-top-row { flex-direction: column; }
+  .home-image-wrapper { max-width: 100%; }
+  .home-card-title { font-size: 20px; }
+  .home-card-body { font-size: 16px; }
+  .home-card { padding: 10px 14px; }
+  .rules-card .home-card-body { flex-direction: column; gap: 8px; }
+  .player-stat-card .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .player-stat-card { padding: 14px; }
+  .match-history-item { padding: 8px; }
+  #admin-subnav { padding: 0 8px; overflow-x: auto; }
+  #admin-subnav a { padding: 8px 10px; font-size: 13px; }
+  .nav-links a { padding: 12px 10px; font-size: 15px; }
+  .h2h-summary .big-score { font-size: 36px; }
+}
+
+@media (max-width: 480px) {
+  .container { padding: 8px; }
+  .card { padding: 10px; }
+  h2 { font-size: 18px; margin-bottom: 12px; }
+  table { font-size: 11px; }
+  th, td { padding: 4px 3px; }
+  .form-row { gap: 6px; }
+  .form-row input, .form-row select { min-width: 70px; padding: 6px 8px; font-size: 13px; }
+  button { padding: 6px 14px; font-size: 13px; }
+  .match-entry { padding: 8px; gap: 6px; }
+  .match-entry input[type="number"] { width: 45px; font-size: 14px; padding: 4px 6px; }
+  .match-entry .team-label { min-width: 80px; font-size: 13px; }
+  .player-stat-card .stat-value { font-size: 22px; }
+  .player-stat-card .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .points-table th, .points-table td { font-size: 10px; padding: 3px 2px; }
 }
