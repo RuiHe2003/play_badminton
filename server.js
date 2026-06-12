@@ -3,6 +3,25 @@ const path = require('path');
 const { initDatabase, saveDatabase, getDb } = require('./database');
 
 const app = express();
+
+// ==================== Auto Sleep ====================
+let lastAccessTime = Date.now();
+const IDLE_TIMEOUT = (parseInt(process.env.IDLE_TIMEOUT_MINUTES) || 3) * 60 * 1000;
+
+app.use((req, res, next) => {
+  lastAccessTime = Date.now();
+  next();
+});
+
+const sleepTimer = setInterval(() => {
+  if (Date.now() - lastAccessTime > IDLE_TIMEOUT) {
+    console.log(`已闲置 ${IDLE_TIMEOUT / 60000} 分钟，进入休眠...`);
+    clearInterval(sleepTimer);
+    saveDatabase();
+    process.exit(0);
+  }
+}, 30000);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
