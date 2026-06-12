@@ -67,8 +67,16 @@ function createTables() {
     FOREIGN KEY (team2_id) REFERENCES teams(id)
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
+
   // Add edition column if upgrading from old schema
   try { db.run(`ALTER TABLE rounds ADD COLUMN edition INTEGER NOT NULL DEFAULT 1`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN bio TEXT DEFAULT ''`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN avatar TEXT DEFAULT ''`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN real_name TEXT DEFAULT ''`); } catch(e) {}
 }
 
 function seedTournaments() {
@@ -78,6 +86,15 @@ function seedTournaments() {
     s.run(['集帅杯', 'singles']);
     s.run(['国王杯', 'mixed_doubles']);
     s.run(['龙王杯', 'mens_doubles']);
+    s.free();
+  }
+
+  const existingSettings = db.exec(`SELECT COUNT(*) as cnt FROM settings`);
+  if (existingSettings[0].values[0][0] === 0) {
+    const s = db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)`);
+    s.run(['password', '202606']);
+    s.run(['security_question', '林瑞和生日的年份是？']);
+    s.run(['security_answer', '2003']);
     s.free();
   }
 }

@@ -5,27 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>羽毛球积分系统</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
 </head>
 <body>
   <nav id="nav">
     <div class="nav-brand">🏸 羽毛球积分系统</div>
     <div class="nav-links">
       <a href="#" data-tab="home">首页</a>
-      <a href="#" data-tab="players">选手管理</a>
-      <a href="#" data-tab="matches">比赛录入</a>
       <a href="#" data-tab="rankings">积分排名</a>
       <a href="#" data-tab="query">赛事查询</a>
       <a href="#" data-tab="player-query">选手查询</a>
       <a href="#" data-tab="headtohead">对阵查询</a>
+      <a href="#" data-tab="admin" class="danger-tab">赛事管理</a>
     </div>
   </nav>
+
+  <div id="admin-subnav">
+    <a href="#" data-subtab="players" class="active">👤 选手管理</a>
+    <a href="#" data-subtab="matches">🏟️ 比赛管理</a>
+  </div>
 
   <div class="container">
     <!-- 首页 -->
     <div id="tab-home" class="tab active">
-      <h2>🏸 系统概览</h2>
-      <div id="home-content"><div class="loading">加载中...</div></div>
+      <div id="home-content"></div>
     </div>
+
+    <!-- 赛事管理（密码验证在此标签页内） -->
+    <div id="tab-admin" class="tab"></div>
 
     <!-- 选手管理 -->
     <div id="tab-players" class="tab">
@@ -33,7 +40,8 @@
       <div class="card">
         <h3>添加选手</h3>
         <div class="form-row">
-          <input type="text" id="player-name" placeholder="选手姓名">
+          <input type="text" id="player-name" placeholder="比赛ID">
+          <input type="text" id="player-real-name" placeholder="姓名（可选）">
           <select id="player-gender"><option value="">选择性别</option><option value="male">男</option><option value="female">女</option></select>
           <button onclick="addPlayer()">添加</button>
         </div>
@@ -41,15 +49,17 @@
       <div class="card"><h3>选手列表</h3><div id="player-list"></div></div>
     </div>
 
-    <!-- 比赛录入 -->
+    <!-- 比赛管理 -->
     <div id="tab-matches" class="tab">
-      <h2>🏟️ 比赛录入</h2>
+      <h2>🏟️ 比赛管理</h2>
       <div class="card" id="create-round-card">
         <h3>📋 创建新轮次</h3>
         <div class="form-row">
           <select id="round-tournament"><option value="">选择赛事</option></select>
           <input type="number" id="round-edition" placeholder="输入届数" min="1" value="1">
           <input type="date" id="round-date">
+          <button id="save-edition-btn" onclick="saveRoundChanges()" style="display:none">💾 保存</button>
+          <span id="save-round-status" style="margin-left:4px;font-size:13px;color:#38a169"></span>
         </div>
         <div id="existing-round-info" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #f6e05e;border-radius:6px;font-size:14px">
           🔔 该赛事此届已有轮次，<a href="#" onclick="loadExistingRound();return false" style="color:#d69e2e;font-weight:600">点击此处加载已有轮次进行比分编辑</a>
@@ -104,7 +114,7 @@
       <h2>🔍 选手查询</h2>
       <div class="card">
         <div class="form-row">
-          <input type="text" id="query-player-name" placeholder="输入选手姓名">
+          <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名">
           <button onclick="queryPlayer()">查询</button>
         </div>
       </div>
@@ -125,6 +135,19 @@
     </div>
   </div>
 
+  <div id="crop-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;padding:24px;max-width:90vw;max-height:90vh;display:flex;flex-direction:column">
+      <h3 style="margin-bottom:12px">✂️ 裁剪头像</h3>
+      <div id="crop-container" style="max-width:600px;max-height:60vh;overflow:hidden">
+        <img id="crop-image" src="">
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="secondary" onclick="closeCropModal()">取消</button>
+        <button onclick="confirmCrop()">✅ 确认上传</button>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

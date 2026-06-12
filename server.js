@@ -3,7 +3,7 @@ const path = require('path');
 const { initDatabase, saveDatabase, getDb } = require('./database');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 let db;
@@ -29,19 +29,50 @@ function query(sql, params = []) {
 // ==================== Players ====================
 
 app.get('/api/players', (req, res) => {
-  res.json(query('SELECT id, name, gender FROM players ORDER BY name'));
+  res.json(query('SELECT id, name, gender, real_name FROM players ORDER BY name'));
 });
 
 app.post('/api/players', (req, res) => {
-  const { name, gender } = req.body;
-  if (!name || !gender) return res.status(400).json({ error: '需要姓名和性别' });
+  const { name, gender, real_name } = req.body;
+  if (!name || !gender) return res.status(400).json({ error: '需要比赛ID和性别' });
   try {
-    query('INSERT INTO players (name, gender) VALUES (?, ?)', [name, gender]);
+    query('INSERT INTO players (name, gender, real_name) VALUES (?, ?, ?)', [name, gender, real_name || '']);
     const id = query('SELECT id FROM players WHERE name = ?', [name])[0]?.id;
-    res.json({ id, name, gender });
+    res.json({ id, name, gender, real_name: real_name || '' });
   } catch (e) {
-    res.status(400).json({ error: '该选手已存在' });
+    res.status(400).json({ error: '该比赛ID已存在' });
   }
+});
+
+app.put('/api/players/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const player = query('SELECT * FROM players WHERE id = ?', [id])[0];
+  if (!player) return res.status(404).json({ error: '选手不存在' });
+  const { name, bio, gender, real_name } = req.body;
+  if (!name && bio === undefined && !gender && real_name === undefined) return res.status(400).json({ error: '需要修改的字段' });
+  const updates = [];
+  const params = [];
+  if (name) { updates.push('name = ?'); params.push(name); }
+  if (bio !== undefined) { updates.push('bio = ?'); params.push(bio); }
+  if (gender) { updates.push('gender = ?'); params.push(gender); }
+  if (real_name !== undefined) { updates.push('real_name = ?'); params.push(real_name); }
+  params.push(id);
+  try {
+    query(`UPDATE players SET ${updates.join(', ')} WHERE id = ?`, params);
+    res.json({ id, name: name || player.name, gender: gender || player.gender, bio: bio !== undefined ? bio : player.bio, real_name: real_name !== undefined ? real_name : player.real_name });
+  } catch (e) {
+    res.status(400).json({ error: '该比赛ID已存在' });
+  }
+});
+
+app.post('/api/players/:id/avatar', (req, res) => {
+  const id = parseInt(req.params.id);
+  const player = query('SELECT * FROM players WHERE id = ?', [id])[0];
+  if (!player) return res.status(404).json({ error: '选手不存在' });
+  const { avatar } = req.body;
+  if (!avatar) return res.status(400).json({ error: '缺少头像数据' });
+  query('UPDATE players SET avatar = ? WHERE id = ?', [avatar, id]);
+  res.json({ success: true });
 });
 
 app.delete('/api/players/:id', (req, res) => {
@@ -63,6 +94,19 @@ app.delete('/api/players/:id', (req, res) => {
 
 app.get('/api/tournaments', (req, res) => {
   res.json(query('SELECT id, name, type FROM tournaments'));
+});
+
+app.post('/api/tournaments', (req, res) => {
+  const { name, type } = req.body;
+  if (!name || !type) return res.status(400).json({ error: '需要名称和类型' });
+  if (!['singles', 'mens_doubles', 'mixed_doubles'].includes(type)) return res.status(400).json({ error: '类型无效' });
+  try {
+    query('INSERT INTO tournaments (name, type) VALUES (?, ?)', [name, type]);
+    const id = query('SELECT id FROM tournaments WHERE name = ?', [name])[0]?.id;
+    res.json({ id, name, type });
+  } catch (e) {
+    res.status(400).json({ error: '该赛事已存在' });
+  }
 });
 
 // ==================== Rounds ====================
@@ -178,6 +222,19 @@ app.delete('/api/matches/:id', (req, res) => {
   res.json({ success: true });
 });
 
+app.put('/api/rounds/:id', (req, res) => {
+  const round = query('SELECT id FROM rounds WHERE id = ?', [req.params.id])[0];
+  if (!round) return res.status(404).json({ error: '轮次不存在' });
+  const { edition, date } = req.body;
+  if (edition !== undefined) {
+    query('UPDATE rounds SET edition = ? WHERE id = ?', [edition, req.params.id]);
+  }
+  if (date !== undefined) {
+    query('UPDATE rounds SET date = ? WHERE id = ?', [date, req.params.id]);
+  }
+  res.json({ success: true });
+});
+
 app.delete('/api/rounds/:id', (req, res) => {
   const round = query('SELECT * FROM rounds WHERE id = ?', [req.params.id])[0];
   if (!round) return res.status(404).json({ error: '轮次不存在' });
@@ -253,11 +310,11 @@ app.get('/api/rankings/:roundId', (req, res) => {
 
 app.get('/api/points', (req, res) => {
   const tournaments = query('SELECT * FROM tournaments');
-  const allPlayers = query('SELECT id, name, gender FROM players ORDER BY name');
+  const allPlayers = query('SELECT id, name, gender, real_name FROM players ORDER BY name');
 
   const playerPoints = {};
   for (const p of allPlayers) {
-    playerPoints[p.id] = { player_id: p.id, name: p.name, gender: p.gender, tournaments: {}, total_points: 0 };
+    playerPoints[p.id] = { player_id: p.id, name: p.name, real_name: p.real_name, gender: p.gender, tournaments: {}, total_points: 0 };
   }
 
   for (const tour of tournaments) {
@@ -408,7 +465,8 @@ app.get('/api/query/round/:roundId', (req, res) => {
 // ==================== Player Stats ====================
 
 app.get('/api/player/:name', (req, res) => {
-  const player = query('SELECT * FROM players WHERE name = ?', [req.params.name])[0];
+  let player = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE name = ?', [req.params.name])[0];
+  if (!player) player = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE real_name = ?', [req.params.name])[0];
   if (!player) return res.status(404).json({ error: '选手不存在' });
 
   const roundIds = [...new Set([
@@ -436,6 +494,10 @@ app.get('/api/player/:name', (req, res) => {
     }
   }
 
+  // Ensure bio/avatar exist for old players
+  if (!player.bio) player.bio = '';
+  if (!player.avatar) player.avatar = '';
+
   res.json({
     player,
     stats: {
@@ -452,16 +514,18 @@ app.get('/api/player/:name', (req, res) => {
 app.get('/api/headtohead', (req, res) => {
   const { name1, name2 } = req.query;
   if (!name1 || !name2) return res.status(400).json({ error: '需要两个选手姓名' });
-  const p1 = query('SELECT * FROM players WHERE name = ?', [name1])[0];
-  const p2 = query('SELECT * FROM players WHERE name = ?', [name2])[0];
+  let p1 = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE name = ?', [name1])[0];
+  if (!p1) p1 = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE real_name = ?', [name1])[0];
+  let p2 = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE name = ?', [name2])[0];
+  if (!p2) p2 = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE real_name = ?', [name2])[0];
   if (!p1 || !p2) return res.status(404).json({ error: '选手不存在' });
 
   const allMatches = query(`
     SELECT m.*, r.date, r.edition, r.round_number, t.name as tournament_name,
-           t1.player1_id as t1p1id, tp1.name as t1p1name,
-           t1.player2_id as t1p2id, tp2.name as t1p2name,
-           t2.player1_id as t2p1id, tp3.name as t2p1name,
-           t2.player2_id as t2p2id, tp4.name as t2p2name
+           t1.player1_id as t1p1id, tp1.name as t1p1name, tp1.real_name as t1p1real,
+           t1.player2_id as t1p2id, tp2.name as t1p2name, tp2.real_name as t1p2real,
+           t2.player1_id as t2p1id, tp3.name as t2p1name, tp3.real_name as t2p1real,
+           t2.player2_id as t2p2id, tp4.name as t2p2name, tp4.real_name as t2p2real
     FROM matches m
     JOIN rounds r ON m.round_id = r.id
     JOIN tournaments t ON r.tournament_id = t.id
@@ -493,8 +557,8 @@ app.get('/api/headtohead', (req, res) => {
 
   res.json({ player1: p1, player2: p2, head_to_head: { p1_wins: p1Wins, p2_wins: p2Wins, total: filtered.length }, matches: filtered.map(m => ({
     date: m.date, tournament: m.tournament_name, edition: m.edition, round: m.round_number,
-    team1: { players: [{ id: m.t1p1id, name: m.t1p1name }, m.t1p2id ? { id: m.t1p2id, name: m.t1p2name } : null].filter(Boolean), score: m.team1_score },
-    team2: { players: [{ id: m.t2p1id, name: m.t2p1name }, m.t2p2id ? { id: m.t2p2id, name: m.t2p2name } : null].filter(Boolean), score: m.team2_score }
+    team1: { players: [{ id: m.t1p1id, name: m.t1p1name, real_name: m.t1p1real || '' }, m.t1p2id ? { id: m.t1p2id, name: m.t1p2name, real_name: m.t1p2real || '' } : null].filter(Boolean), score: m.team1_score },
+    team2: { players: [{ id: m.t2p1id, name: m.t2p1name, real_name: m.t2p1real || '' }, m.t2p2id ? { id: m.t2p2id, name: m.t2p2name, real_name: m.t2p2real || '' } : null].filter(Boolean), score: m.team2_score }
   })) });
 });
 
@@ -584,7 +648,7 @@ app.get('/api/query/rounds', (req, res) => {
     round.ranking = ranking;
     round.teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
-             p1.name as player1_name, p2.name as player2_name
+             p1.name as player1_name, p1.real_name as player1_real, p2.name as player2_name, p2.real_name as player2_real
       FROM teams t
       JOIN players p1 ON t.player1_id = p1.id
       LEFT JOIN players p2 ON t.player2_id = p2.id
@@ -592,7 +656,8 @@ app.get('/api/query/rounds', (req, res) => {
     `, [round.id]);
     round.matches = query(`
       SELECT m.id, m.round_id, m.team1_id, m.team2_id, m.team1_score, m.team2_score,
-             p1.name as t1p1name, p2.name as t1p2name, p3.name as t2p1name, p4.name as t2p2name
+             p1.name as t1p1name, p1.real_name as t1p1real, p2.name as t1p2name, p2.real_name as t1p2real,
+             p3.name as t2p1name, p3.real_name as t2p1real, p4.name as t2p2name, p4.real_name as t2p2real
       FROM matches m
       JOIN teams t1 ON m.team1_id = t1.id
       JOIN teams t2 ON m.team2_id = t2.id
@@ -605,6 +670,53 @@ app.get('/api/query/rounds', (req, res) => {
     `, [round.id]);
   }
   res.json(rounds);
+});
+
+// ==================== Auth ====================
+
+app.get('/api/auth/security-question', (req, res) => {
+  const row = query("SELECT value FROM settings WHERE key = 'security_question'");
+  res.json({ question: row.length ? row[0].value : '' });
+});
+
+app.post('/api/auth/verify', (req, res) => {
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ error: '请输入密码' });
+  if (!/^\d{6}$/.test(password)) return res.status(400).json({ error: '密码必须为6位数字' });
+  const row = query("SELECT value FROM settings WHERE key = 'password'");
+  const valid = row.length && row[0].value === password;
+  if (!valid) return res.status(403).json({ error: '密码错误' });
+  res.json({ success: true });
+});
+
+app.post('/api/auth/change-password', (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) return res.status(400).json({ error: '请填写当前密码和新密码' });
+  if (!/^\d{6}$/.test(newPassword)) return res.status(400).json({ error: '新密码必须为6位数字' });
+  const row = query("SELECT value FROM settings WHERE key = 'password'");
+  if (!row.length || row[0].value !== currentPassword) return res.status(403).json({ error: '当前密码错误' });
+  query("UPDATE settings SET value = ? WHERE key = 'password'", [newPassword]);
+  res.json({ success: true });
+});
+
+app.post('/api/auth/forgot-password', (req, res) => {
+  const { answer, newPassword } = req.body;
+  if (!answer || !newPassword) return res.status(400).json({ error: '请填写答案和新密码' });
+  if (!/^\d{6}$/.test(newPassword)) return res.status(400).json({ error: '新密码必须为6位数字' });
+  const row = query("SELECT value FROM settings WHERE key = 'security_answer'");
+  if (!row.length || row[0].value !== answer) return res.status(403).json({ error: '密保答案错误' });
+  query("UPDATE settings SET value = ? WHERE key = 'password'", [newPassword]);
+  res.json({ success: true });
+});
+
+app.post('/api/auth/change-security', (req, res) => {
+  const { password, question, answer } = req.body;
+  if (!password || !question || !answer) return res.status(400).json({ error: '请填写所有字段' });
+  const row = query("SELECT value FROM settings WHERE key = 'password'");
+  if (!row.length || row[0].value !== password) return res.status(403).json({ error: '密码错误' });
+  query("UPDATE settings SET value = ? WHERE key = 'security_question'", [question]);
+  query("UPDATE settings SET value = ? WHERE key = 'security_answer'", [answer]);
+  res.json({ success: true });
 });
 
 // ==================== Start Server ====================
