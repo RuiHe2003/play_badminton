@@ -108,6 +108,8 @@ body:has(#tab-home.active) .container { padding: 0; }
   #admin-subnav a { padding: 8px 10px; font-size: 13px; }
   .nav-links a { padding: 12px 10px; font-size: 15px; }
   .h2h-summary .big-score { font-size: 36px; }
+  #tab-home.active { height: auto; overflow-y: visible; padding: 4px 12px; }
+  #tab-home.active #home-content { flex: none; }
 }
 
 @media (max-width: 480px) {
@@ -125,4 +127,6 @@ body:has(#tab-home.active) .container { padding: 0; }
   .player-stat-card .stat-value { font-size: 22px; }
   .player-stat-card .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .points-table th, .points-table td { font-size: 10px; padding: 3px 2px; }
+  #tab-home.active { height: auto; overflow-y: visible; padding: 4px 8px; }
+  #tab-home.active #home-content { flex: none; }
 }
