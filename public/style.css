@@ -61,8 +61,8 @@ tr:hover { background: #f7fafc; }
 .h2h-summary .h2h-names { font-size: 18px; color: #4a5568; margin: 8px 0; }
 .h2h-summary .h2h-vs { font-size: 14px; color: #a0aec0; }
 body:has(#tab-home.active) .container { padding: 0; }
-#tab-home.active { height: calc(100vh - 57px); display: flex; flex-direction: column; padding: 8px 24px; overflow: hidden; }
-#tab-home.active #home-content { flex: 1; display: flex; flex-direction: column; gap: 0; overflow: hidden; }
+#tab-home.active { height: calc(100vh - 57px); display: flex; flex-direction: column; padding: 8px 24px; overflow-y: auto; }
+#tab-home.active #home-content { flex: 1; display: flex; flex-direction: column; gap: 0; }
 .home-top-row { display: flex; gap: 16px; flex: 0 0 auto; margin-bottom: 8px; }
 .home-card { display: flex; flex-direction: column; justify-content: center; padding: 12px 20px; border-radius: 10px; }
 .intro-card { flex: 1; }
