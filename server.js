@@ -765,6 +765,16 @@ app.post('/api/auth/change-security', (req, res) => {
   res.json({ success: true });
 });
 
+// ==================== Database Backup ====================
+app.get('/api/backup', (req, res) => {
+  const DB_PATH = path.join(__dirname, 'data.db');
+  saveDatabase();
+  if (!require('fs').existsSync(DB_PATH)) {
+    return res.status(404).json({ error: 'Database file not found' });
+  }
+  res.download(DB_PATH, `data_${new Date().toISOString().slice(0, 10)}.db`);
+});
+
 // ==================== Start Server ====================
 
 const PORT = process.env.PORT || 3000;
