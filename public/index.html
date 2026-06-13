@@ -94,6 +94,32 @@
         <h3>📊 实时排名</h3>
         <div id="live-rankings"></div>
       </div>
+      <div class="card" id="free-match-card" style="display:none">
+        <h3>🎯 手动录入比赛</h3>
+        <div id="fm-round-info">
+          <div class="form-row">
+            <button onclick="createFreeRound()" id="fm-create-btn">📋 创建轮次</button>
+            <span id="fm-round-status" style="margin-left:8px;font-size:13px"></span>
+          </div>
+        </div>
+        <div id="fm-entry-area" style="display:none">
+          <div class="form-row">
+            <select id="fm-p1"><option value="">选手1</option></select>
+            <select id="fm-p2"><option value="">选手2</option></select>
+            <span style="margin:0 4px">VS</span>
+            <select id="fm-p3"><option value="">选手3</option></select>
+            <select id="fm-p4"><option value="">选手4</option></select>
+          </div>
+          <div class="form-row" style="margin-top:6px">
+            <input type="number" id="fm-s1" placeholder="比分" min="0" max="31" style="width:60px">
+            <span style="margin:0 4px">:</span>
+            <input type="number" id="fm-s2" placeholder="比分" min="0" max="31" style="width:60px">
+            <button onclick="saveFreeMatch()">✅ 录入</button>
+            <span id="fm-status" style="margin-left:8px;font-size:13px"></span>
+          </div>
+          <div id="free-match-list" style="margin-top:12px"></div>
+        </div>
+      </div>
     </div>
 
     <!-- 积分排名 -->

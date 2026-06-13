@@ -191,15 +191,28 @@ async function initMatchPage() {
   ).join('');
   const levelSel = document.getElementById('round-level');
   if (levelSel) levelSel.onchange = () => { MS.level = parseInt(levelSel.value); };
-  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); setDefaultLevel(); };
+  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); setDefaultLevel(); toggleFreeMatchUI(); };
   function setDefaultLevel() {
     const opt = sel.options[sel.selectedIndex];
     if (levelSel && opt) { levelSel.value = opt.dataset.level || '1000'; MS.level = parseInt(levelSel.value); }
   }
+  function toggleFreeMatchUI() {
+    const sel = document.getElementById('round-tournament');
+    const opt = sel.options[sel.selectedIndex];
+    const isFree = opt && opt.text.startsWith('狗王杯');
+    document.getElementById('free-match-card').style.display = isFree ? 'block' : 'none';
+    document.getElementById('participant-area').style.display = isFree ? 'none' : '';
+    document.getElementById('round-actions').style.display = isFree ? 'none' : '';
+    document.getElementById('fixture-card').style.display = isFree ? 'none' : document.getElementById('fixture-card').style.display;
+    document.getElementById('live-rank-card').style.display = isFree ? 'none' : document.getElementById('live-rank-card').style.display;
+    document.getElementById('existing-round-info').style.display = isFree ? 'none' : document.getElementById('existing-round-info').style.display;
+    if (isFree) initFreeMatch();
+  }
   document.getElementById('round-date').value = new Date().toISOString().slice(0, 10);
-  document.getElementById('round-edition').oninput = () => { checkExistingRoundForEdit(); };
+  document.getElementById('round-edition').oninput = async () => { await checkExistingRoundForEdit(); toggleFreeMatchOnEditionChange(); };
   await updateEditionSelect();
   await refreshParticipantSelect();
+  toggleFreeMatchUI();
 }
 
 async function updateEditionSelect() {
@@ -511,6 +524,183 @@ async function saveAllMatches() {
   const st = document.getElementById('save-all-status');
   st.textContent = '✅ 已保存'; st.style.color = '#38a169';
   updateLive();
+}
+
+// ==================== Free-Doubles (狗王杯) ====================
+function toggleFreeMatchOnEditionChange() {
+  const sel = document.getElementById('round-tournament');
+  const opt = sel.options[sel.selectedIndex];
+  if (opt && opt.text.startsWith('狗王杯')) initFreeMatch();
+}
+
+async function initFreeMatch() {
+  const sel = document.getElementById('round-tournament');
+  const tid = parseInt(sel.value);
+  if (!tid) return;
+  MS.tid = tid;
+  MS.tname = sel.options[sel.selectedIndex].text.split('(')[0].trim();
+
+  const players = await api('/api/players');
+  const opts = players.map(p => `<option value="${p.id}">${p.real_name || p.name}</option>`).join('');
+  ['fm-p1', 'fm-p2', 'fm-p3', 'fm-p4'].forEach(id => {
+    const el = document.getElementById(id);
+    el.innerHTML = '<option value="">选择选手</option>' + opts;
+  });
+
+  // Check if round exists for this edition
+  const edition = document.getElementById('round-edition').value;
+  if (edition) {
+    try {
+      const data = await api(`/api/rounds/lookup?tournamentId=${tid}&edition=${edition}`);
+      if (data.exists) {
+        MS.roundId = data.round.id;
+        MS.edition = data.round.edition;
+        MS.date = data.round.date;
+        MS.level = data.round.round_level || data.round.level || 1000;
+        document.getElementById('fm-create-btn').style.display = 'none';
+        document.getElementById('fm-round-status').textContent = `✅ 已加载第${MS.edition}届`;
+        document.getElementById('fm-entry-area').style.display = 'block';
+        loadFreeMatchList();
+        return;
+      }
+    } catch (e) {}
+  }
+  document.getElementById('fm-create-btn').style.display = 'inline-block';
+  document.getElementById('fm-round-status').textContent = '';
+  document.getElementById('fm-entry-area').style.display = 'none';
+}
+
+async function createFreeRound() {
+  const edition = parseInt(document.getElementById('round-edition').value);
+  const date = document.getElementById('round-date').value;
+  const level = parseInt(document.getElementById('round-level').value) || 1000;
+  if (!edition || !date) return alert('请填写届数和日期');
+  try {
+    document.getElementById('fm-round-status').textContent = '⏳ 创建中...';
+    const r = await api('/api/rounds', { method: 'POST', body: JSON.stringify({
+      tournament_id: MS.tid, edition, date, level
+    })});
+    MS.roundId = r.id;
+    MS.edition = edition;
+    MS.date = date;
+    MS.level = level;
+    document.getElementById('fm-create-btn').style.display = 'none';
+    document.getElementById('fm-round-status').textContent = `✅ 已创建第${edition}届`;
+    document.getElementById('fm-entry-area').style.display = 'block';
+    document.getElementById('save-edition-btn').style.display = 'inline-block';
+    document.getElementById('save-round-status').textContent = '';
+    loadFreeMatchList();
+  } catch (e) {
+    document.getElementById('fm-round-status').textContent = '❌ 创建失败: ' + e.message;
+  }
+}
+
+async function saveFreeMatch() {
+  if (!MS.roundId) return alert('请先创建轮次');
+  const p1 = parseInt(document.getElementById('fm-p1').value);
+  const p2 = parseInt(document.getElementById('fm-p2').value);
+  const p3 = parseInt(document.getElementById('fm-p3').value);
+  const p4 = parseInt(document.getElementById('fm-p4').value);
+  const s1 = parseInt(document.getElementById('fm-s1').value);
+  const s2 = parseInt(document.getElementById('fm-s2').value);
+  if (!p1 || !p2 || !p3 || !p4) return alert('请选择4名选手');
+  if (new Set([p1, p2, p3, p4]).size !== 4) return alert('选手不能重复');
+  if (isNaN(s1) || isNaN(s2)) return alert('请填写比分');
+  if (s1 > 31 || s2 > 31 || s1 < 0 || s2 < 0) return alert('比分范围0-31');
+  try {
+    document.getElementById('fm-status').textContent = '⏳...';
+    await api('/api/matches/direct', { method: 'POST', body: JSON.stringify({
+      round_id: MS.roundId, player1_id: p1, player2_id: p2, player3_id: p3, player4_id: p4, team1_score: s1, team2_score: s2
+    })});
+    document.getElementById('fm-status').textContent = '✅ 已录入';
+    document.getElementById('fm-p1').value = '';
+    document.getElementById('fm-p2').value = '';
+    document.getElementById('fm-p3').value = '';
+    document.getElementById('fm-p4').value = '';
+    document.getElementById('fm-s1').value = '';
+    document.getElementById('fm-s2').value = '';
+    loadFreeMatchList();
+  } catch (e) {
+    document.getElementById('fm-status').textContent = '❌ ' + e.message;
+  }
+}
+
+async function loadFreeMatchList() {
+  if (!MS.roundId) return;
+  const matches = await api(`/api/matches/${MS.roundId}`);
+  const teams = await api(`/api/rounds/${MS.roundId}/teams`);
+  const teamMap = {};
+  for (const t of teams) {
+    teamMap[t.team_id] = { label: `${t.player1_name}${t.player2_name ? ' + ' + t.player2_name : ''}`, p1: t.player1_id, p2: t.player2_id, p1n: t.player1_name, p2n: t.player2_name };
+  }
+
+  let h = '<h4>📋 比赛列表</h4><table><thead><tr><th>#</th><th>队1</th><th>比分</th><th>队2</th><th>操作</th></tr></thead><tbody>';
+  matches.forEach((m, i) => {
+    const t1 = teamMap[m.team1_id];
+    const t2 = teamMap[m.team2_id];
+    h += `<tr>
+      <td>${i + 1}</td>
+      <td>${t1 ? t1.label : '?'}</td>
+      <td><strong>${m.team1_score}:${m.team2_score}</strong></td>
+      <td>${t2 ? t2.label : '?'}</td>
+      <td><button class="danger" onclick="deleteFreeMatch(${m.id})" style="font-size:11px;padding:2px 8px">删除</button></td>
+    </tr>`;
+  });
+  h += '</tbody></table>';
+
+  // Per-player rankings
+  const playerStats = {};
+  for (const m of matches) {
+    const t1 = teamMap[m.team1_id];
+    const t2 = teamMap[m.team2_id];
+    if (!t1 || !t2) continue;
+    const t1w = m.team1_score > m.team2_score;
+    const t1players = [[t1.p1, t1.p1n], t1.p2 ? [t1.p2, t1.p2n] : null].filter(Boolean);
+    const t2players = [[t2.p1, t2.p1n], t2.p2 ? [t2.p2, t2.p2n] : null].filter(Boolean);
+    for (const [pid, name] of t1players) {
+      if (!playerStats[pid]) playerStats[pid] = { name, wins: 0, losses: 0, pf: 0, pa: 0 };
+      playerStats[pid].wins += t1w ? 1 : 0;
+      playerStats[pid].losses += t1w ? 0 : 1;
+      playerStats[pid].pf += m.team1_score;
+      playerStats[pid].pa += m.team2_score;
+    }
+    for (const [pid, name] of t2players) {
+      if (!playerStats[pid]) playerStats[pid] = { name, wins: 0, losses: 0, pf: 0, pa: 0 };
+      playerStats[pid].wins += t1w ? 0 : 1;
+      playerStats[pid].losses += t1w ? 1 : 0;
+      playerStats[pid].pf += m.team2_score;
+      playerStats[pid].pa += m.team1_score;
+    }
+  }
+
+  const sorted = Object.entries(playerStats).sort((a, b) => b[1].wins - a[1].wins || (b[1].pf - b[1].pa) - (a[1].pf - a[1].pa));
+  const n = sorted.length;
+  const d = n ? Math.round(MS.level / n) : 0;
+  h += '<h4 style="margin-top:16px">📊 选手排名</h4><table><thead><tr><th>#</th><th>选手</th><th>胜</th><th>负</th><th>得分</th><th>失分</th><th>净胜分</th><th>积分</th></tr></thead><tbody>';
+  sorted.forEach(([pid, s], i) => {
+    const pts = MS.level - d * i;
+    h += `<tr>
+      <td>${i + 1}</td>
+      <td><strong>${s.name}</strong></td>
+      <td style="color:#38a169">${s.wins}</td>
+      <td style="color:#e53e3e">${s.losses}</td>
+      <td>${s.pf}</td>
+      <td>${s.pa}</td>
+      <td>${s.pf - s.pa}</td>
+      <td><strong>${pts}</strong></td>
+    </tr>`;
+  });
+  h += '</tbody></table>';
+
+  document.getElementById('free-match-list').innerHTML = matches.length ? h : '<div class="loading">暂无比赛记录</div>';
+}
+
+async function deleteFreeMatch(matchId) {
+  if (!confirm('确认删除该比赛？')) return;
+  try {
+    await api(`/api/matches/${matchId}`, { method: 'DELETE' });
+    loadFreeMatchList();
+  } catch (e) { alert('删除失败: ' + e.message); }
 }
 
 async function editRoundInfo() {

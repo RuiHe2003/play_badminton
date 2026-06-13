@@ -157,8 +157,8 @@ app.get('/api/rounds', (req, res) => {
 
 app.post('/api/rounds', (req, res) => {
   const { tournament_id, edition, date, participants, level } = req.body;
-  if (!tournament_id || !edition || !date || !participants || participants.length < 2) {
-    return res.status(400).json({ error: '需要赛事ID、届数、日期和至少2个参赛队伍' });
+  if (!tournament_id || !edition || !date) {
+    return res.status(400).json({ error: '需要赛事ID、届数、日期' });
   }
 
   const tournament = query('SELECT * FROM tournaments WHERE id = ?', [tournament_id])[0];
@@ -179,11 +179,13 @@ app.post('/api/rounds', (req, res) => {
     roundId = query('SELECT id FROM rounds WHERE tournament_id = ? AND edition = ? ORDER BY id DESC LIMIT 1', [tournament_id, edition])[0]?.id;
   }
 
-  for (const p of participants) {
-    if (tournament.type === 'singles') {
-      query('INSERT INTO teams (round_id, player1_id, player2_id) VALUES (?, ?, NULL)', [roundId, p.player1_id]);
-    } else {
-      query('INSERT INTO teams (round_id, player1_id, player2_id) VALUES (?, ?, ?)', [roundId, p.player1_id, p.player2_id]);
+  if (participants) {
+    for (const p of participants) {
+      if (tournament.type === 'singles') {
+        query('INSERT INTO teams (round_id, player1_id, player2_id) VALUES (?, ?, NULL)', [roundId, p.player1_id]);
+      } else {
+        query('INSERT INTO teams (round_id, player1_id, player2_id) VALUES (?, ?, ?)', [roundId, p.player1_id, p.player2_id]);
+      }
     }
   }
 
@@ -206,6 +208,51 @@ app.get('/api/rounds/:id/teams', (req, res) => {
 });
 
 // ==================== Matches ====================
+
+// Direct match creation for free-doubles tournaments (e.g. 狗王杯)
+// Accepts 4 player IDs + scores, auto-creates teams
+app.post('/api/matches/direct', (req, res) => {
+  const { round_id, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score } = req.body;
+  if (!round_id || !player1_id || !player2_id || !player3_id || !player4_id || team1_score === undefined || team2_score === undefined) {
+    return res.status(400).json({ error: '缺少比赛信息' });
+  }
+  const ids = [player1_id, player2_id, player3_id, player4_id];
+  if (new Set(ids).size !== 4) return res.status(400).json({ error: '4名选手不能重复' });
+  if (team1_score > 31 || team2_score > 31) return res.status(400).json({ error: '比分不能超过31分' });
+  if (team1_score < 0 || team2_score < 0) return res.status(400).json({ error: '比分不能为负数' });
+
+  function findOrCreateTeam(p1, p2) {
+    let sql, params;
+    if (p2) {
+      sql = 'SELECT id FROM teams WHERE round_id = ? AND player1_id = ? AND player2_id = ?';
+      params = [round_id, p1, p2];
+    } else {
+      sql = 'SELECT id FROM teams WHERE round_id = ? AND player1_id = ? AND player2_id IS NULL';
+      params = [round_id, p1];
+    }
+    let team = query(sql, params);
+    if (!team.length) {
+      query('INSERT INTO teams (round_id, player1_id, player2_id) VALUES (?, ?, ?)', [round_id, p1, p2 || null]);
+      team = query(sql, params);
+    }
+    return team[0].id;
+  }
+  const team1_id = findOrCreateTeam(player1_id, player2_id || null);
+  const team2_id = findOrCreateTeam(player3_id, player4_id || null);
+
+  const existing = query('SELECT id FROM matches WHERE round_id = ? AND ((team1_id = ? AND team2_id = ?) OR (team1_id = ? AND team2_id = ?))',
+    [round_id, team1_id, team2_id, team2_id, team1_id]);
+  if (existing.length > 0) {
+    query('UPDATE matches SET team1_score = ?, team2_score = ? WHERE id = ?',
+      [team1_score, team2_score, existing[0].id]);
+    res.json({ id: existing[0].id, updated: true });
+  } else {
+    query('INSERT INTO matches (round_id, team1_id, team2_id, team1_score, team2_score) VALUES (?, ?, ?, ?, ?)',
+      [round_id, team1_id, team2_id, team1_score, team2_score]);
+    const id = query('SELECT id FROM matches WHERE round_id = ? AND team1_id = ? AND team2_id = ?', [round_id, team1_id, team2_id])[0]?.id;
+    res.json({ id, created: true });
+  }
+});
 
 app.post('/api/matches', (req, res) => {
   const { round_id, team1_id, team2_id, team1_score, team2_score } = req.body;
@@ -271,6 +318,7 @@ app.delete('/api/rounds/:id', (req, res) => {
 });
 
 app.get('/api/matches/:roundId', (req, res) => {
+  const roundId = parseInt(req.params.roundId);
   const matches = query(`
     SELECT m.id, m.round_id, m.team1_id, m.team2_id, m.team1_score, m.team2_score,
            t1.player1_id as t1p1id, p1.name as t1p1name, p1.gender as t1p1gender,
@@ -286,7 +334,7 @@ app.get('/api/matches/:roundId', (req, res) => {
     LEFT JOIN players p4 ON t2.player2_id = p4.id
     WHERE m.round_id = ?
     ORDER BY m.id
-  `, [req.params.id]);
+  `, [roundId]);
   res.json(matches);
 });
 
@@ -337,6 +385,49 @@ app.get('/api/rankings/:roundId', (req, res) => {
   res.json(calculateRoundRankings(parseInt(req.params.roundId), undefined));
 });
 
+// Per-player ranking for free-doubles tournaments (e.g. 狗王杯)
+function calculatePlayerRankings(roundId, level) {
+  const matches = query(`
+    SELECT m.team1_id, m.team2_id, m.team1_score, m.team2_score,
+           t1.player1_id as t1p1, t1.player2_id as t1p2,
+           t2.player1_id as t2p1, t2.player2_id as t2p2
+    FROM matches m
+    JOIN teams t1 ON m.team1_id = t1.id
+    JOIN teams t2 ON m.team2_id = t2.id
+    WHERE m.round_id = ?
+  `, [roundId]);
+
+  const playerStats = {};
+  for (const m of matches) {
+    const t1w = m.team1_score > m.team2_score;
+    const t1players = [[m.t1p1, m.t1p2].filter(Boolean)];
+    const t2players = [[m.t2p1, m.t2p2].filter(Boolean)];
+    for (const pid of t1players[0]) {
+      if (!playerStats[pid]) playerStats[pid] = { wins: 0, losses: 0, pf: 0, pa: 0 };
+      playerStats[pid].wins += t1w ? 1 : 0;
+      playerStats[pid].losses += t1w ? 0 : 1;
+      playerStats[pid].pf += m.team1_score;
+      playerStats[pid].pa += m.team2_score;
+    }
+    for (const pid of t2players[0]) {
+      if (!playerStats[pid]) playerStats[pid] = { wins: 0, losses: 0, pf: 0, pa: 0 };
+      playerStats[pid].wins += t1w ? 0 : 1;
+      playerStats[pid].losses += t1w ? 1 : 0;
+      playerStats[pid].pf += m.team2_score;
+      playerStats[pid].pa += m.team1_score;
+    }
+  }
+
+  let rankings = Object.entries(playerStats).map(([pid, s]) => ({ player_id: parseInt(pid), ...s }));
+  rankings.sort((a, b) => b.wins - a.wins || (b.pf - b.pa) - (a.pf - a.pa));
+
+  const n = rankings.length;
+  const d = n ? Math.round(level / n) : 0;
+  rankings = rankings.map((r, idx) => ({ ...r, rank: idx + 1, points_earned: Math.max(0, level - d * idx) }));
+
+  return { rankings, d };
+}
+
 // ==================== Points Calculation ====================
 
 app.get('/api/points', (req, res) => {
@@ -367,21 +458,31 @@ app.get('/api/points', (req, res) => {
         acc[p.id] = { points: 0, lastD: null };
       }
 
+      const isFree = tour.name === '狗王杯';
       for (const round of rounds) {
-        const { rankings, d } = calculateRoundRankings(round.id, lvl);
+        const result = isFree ? calculatePlayerRankings(round.id, lvl) : calculateRoundRankings(round.id, lvl);
+        const { rankings, d } = result;
         const participants = new Set();
 
         for (const rank of rankings) {
-          participants.add(rank.player1_id);
-          if (acc[rank.player1_id]) {
-            acc[rank.player1_id].points = rank.points_earned;
-            acc[rank.player1_id].lastD = d;
-          }
-          if (rank.player2_id) {
-            participants.add(rank.player2_id);
-            if (acc[rank.player2_id]) {
-              acc[rank.player2_id].points = rank.points_earned;
-              acc[rank.player2_id].lastD = d;
+          if (isFree) {
+            participants.add(rank.player_id);
+            if (acc[rank.player_id]) {
+              acc[rank.player_id].points = rank.points_earned;
+              acc[rank.player_id].lastD = d;
+            }
+          } else {
+            participants.add(rank.player1_id);
+            if (acc[rank.player1_id]) {
+              acc[rank.player1_id].points = rank.points_earned;
+              acc[rank.player1_id].lastD = d;
+            }
+            if (rank.player2_id) {
+              participants.add(rank.player2_id);
+              if (acc[rank.player2_id]) {
+                acc[rank.player2_id].points = rank.points_earned;
+                acc[rank.player2_id].lastD = d;
+              }
             }
           }
         }
@@ -394,18 +495,22 @@ app.get('/api/points', (req, res) => {
       }
 
       const latestRound = rounds[rounds.length - 1];
-      const latestRank = calculateRoundRankings(latestRound.id, lvl);
+      const latestRank = isFree ? calculatePlayerRankings(latestRound.id, lvl) : calculateRoundRankings(latestRound.id, lvl);
       const latestParticipants = new Set();
       for (const rank of latestRank.rankings) {
-        latestParticipants.add(rank.player1_id);
-        if (rank.player2_id) latestParticipants.add(rank.player2_id);
+        if (isFree) {
+          latestParticipants.add(rank.player_id);
+        } else {
+          latestParticipants.add(rank.player1_id);
+          if (rank.player2_id) latestParticipants.add(rank.player2_id);
+        }
       }
 
       const key = tour.name + '(' + lvl + '级)';
       for (const p of allPlayers) {
         if (acc[p.id].points === 0 && acc[p.id].lastD === null) continue;
-        if (latestParticipants.has(p.id)) {
-          const rank = latestRank.rankings.find(r => r.player1_id === p.id || r.player2_id === p.id);
+        const rank = latestRank.rankings.find(r => isFree ? r.player_id === p.id : (r.player1_id === p.id || r.player2_id === p.id));
+        if (latestParticipants.has(p.id) && rank) {
           playerPoints[p.id].tournaments[key] = {
             points: acc[p.id].points, edition: latestRound.edition, level: lvl,
             participated: true, rank: rank.rank, d: acc[p.id].lastD

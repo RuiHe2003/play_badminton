@@ -90,6 +90,7 @@ function seedTournaments() {
     s.run(['集帅杯', 'singles', 1000]);
     s.run(['国王杯', 'mixed_doubles', 1000]);
     s.run(['龙王杯', 'mens_doubles', 1000]);
+    s.run(['狗王杯', 'mixed_doubles', 1000]);
     s.free();
   }
 
