@@ -102,7 +102,7 @@ async function loadHome() {
       <div class="home-card-body">
         <div class="rule-item">
           <div class="rule-label">单轮排名</div>
-          <div class="rule-desc">每轮比赛按胜场数排名，胜场相同则净胜分高者排名靠前。第1名得1000分，之后每名递减 d 分（d = 1000 ÷ 参赛队伍数，四舍五入）。</div>
+          <div class="rule-desc">每轮比赛按胜场数排名，胜场相同则净胜分高者排名靠前。各赛事分为 1000 级、750 级、500 级、300 级四个级别，第1名得该赛事级别分数，之后每名递减 d 分（d = 赛事级别 ÷ 参赛队伍数，四舍五入）。</div>
         </div>
         <div class="rule-item">
           <div class="rule-label">跨届积分</div>
@@ -110,7 +110,7 @@ async function loadHome() {
         </div>
         <div class="rule-item">
           <div class="rule-label">总积分榜</div>
-          <div class="rule-desc">选手在所有赛事中的当前积分相加，按总积分降序排列。</div>
+          <div class="rule-desc">选手在 750 级及以上赛事的当前积分相加，按总积分降序排列。</div>
         </div>
       </div>
     </div>
@@ -174,10 +174,10 @@ async function addPlayer() {
 }
 
 // ==================== Match Page ====================
-const MS = { tid: null, type: '', tname: '', edition: 1, date: '', participants: [], roundId: null, roundNum: null, fixtures: [] };
+const MS = { tid: null, type: '', tname: '', level: 1000, edition: 1, date: '', participants: [], roundId: null, roundNum: null, fixtures: [] };
 
 async function initMatchPage() {
-  Object.assign(MS, { tid: null, type: '', tname: '', edition: 1, date: '', participants: [], roundId: null, roundNum: null, fixtures: [] });
+  Object.assign(MS, { tid: null, type: '', tname: '', level: 1000, edition: 1, date: '', participants: [], roundId: null, roundNum: null, fixtures: [] });
   document.getElementById('fixture-card').style.display = 'none';
   document.getElementById('live-rank-card').style.display = 'none';
   document.getElementById('round-actions').style.display = 'none';
@@ -187,9 +187,15 @@ async function initMatchPage() {
   const tournaments = await api('/api/tournaments');
   const sel = document.getElementById('round-tournament');
   sel.innerHTML = tournaments.map(t =>
-    `<option value="${t.id}" data-type="${t.type}">${t.name} (${t.type === 'singles' ? '男单' : t.type === 'mixed_doubles' ? '混双' : '男双'})</option>`
+    `<option value="${t.id}" data-type="${t.type}" data-level="${t.level}">${t.name} (${t.type === 'singles' ? '男单' : t.type === 'mixed_doubles' ? '混双' : '男双'})</option>`
   ).join('');
-  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); };
+  const levelSel = document.getElementById('round-level');
+  if (levelSel) levelSel.onchange = () => { MS.level = parseInt(levelSel.value); };
+  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); setDefaultLevel(); };
+  function setDefaultLevel() {
+    const opt = sel.options[sel.selectedIndex];
+    if (levelSel && opt) { levelSel.value = opt.dataset.level || '1000'; MS.level = parseInt(levelSel.value); }
+  }
   document.getElementById('round-date').value = new Date().toISOString().slice(0, 10);
   document.getElementById('round-edition').oninput = () => { checkExistingRoundForEdit(); };
   await updateEditionSelect();
@@ -217,6 +223,7 @@ async function refreshParticipantSelect() {
   }
   MS.tid = parseInt(opt.value);
   MS.type = opt.dataset.type;
+  MS.level = parseInt(document.getElementById('round-level').value) || 1000;
   MS.tname = opt.text.split('(')[0].trim();
   MS.edition = parseInt(document.getElementById('round-edition').value) || 1;
   MS.date = document.getElementById('round-date').value;
@@ -268,15 +275,17 @@ async function saveRoundChanges() {
   const date = document.getElementById('round-date').value;
   if (!edition || !date) return alert('请填写届数和日期');
   try {
+    const lvl = parseInt(document.getElementById('round-level').value) || 1000;
     await api(`/api/rounds/${MS.roundId}`, {
       method: 'PUT',
-      body: JSON.stringify({ edition, date })
+      body: JSON.stringify({ edition, date, level: lvl })
     });
     MS.edition = edition;
     MS.date = date;
+    MS.level = lvl;
     document.getElementById('save-round-status').textContent = '✅ 已保存';
     if (document.getElementById('fixture-card').style.display === 'block') {
-      document.getElementById('fixture-title').innerHTML = `${MS.tname} - 第${MS.edition}届 <button onclick="editRoundInfo()" style="font-size:11px;padding:1px 10px;margin-left:8px;vertical-align:middle">✏️ 编辑</button>`;
+      document.getElementById('fixture-title').innerHTML = `${MS.tname} - 第${MS.edition}届 (${MS.level}级) <button onclick="editRoundInfo()" style="font-size:11px;padding:1px 10px;margin-left:8px;vertical-align:middle">✏️ 编辑</button>`;
     }
   } catch (e) {
     document.getElementById('save-round-status').textContent = '❌ 保存失败';
@@ -294,8 +303,11 @@ async function loadExistingRound() {
     MS.tid = round.tournament_id;
     MS.tname = round.tournament_name;
     MS.type = round.tournament_type;
+    MS.level = round.round_level || round.level || 1000;
     MS.edition = round.edition;
     MS.date = round.date;
+    const levelSel = document.getElementById('round-level');
+    if (levelSel) levelSel.value = MS.level;
     document.getElementById('round-edition').value = round.edition;
     document.getElementById('round-date').value = round.date;
     document.getElementById('save-edition-btn').style.display = 'inline-block';
@@ -402,7 +414,7 @@ async function createAndShowFixtures() {
   if (MS.participants.length < 2) return alert('至少需要2个参赛队伍');
   try {
     const r = await api('/api/rounds', { method: 'POST', body: JSON.stringify({
-      tournament_id: MS.tid, edition: MS.edition, date,
+      tournament_id: MS.tid, edition: MS.edition, date, level: MS.level,
       participants: MS.participants.map(p => ({ player1_id: p.p1, player2_id: p.p2 }))
     })});
     MS.roundId = r.id;
@@ -505,16 +517,19 @@ async function editRoundInfo() {
   if (!MS.roundId) return;
   const newEdition = prompt('输入新届数:', MS.edition);
   if (!newEdition || parseInt(newEdition) === MS.edition) return;
+  const newLevel = prompt('输入新级别 (300/500/750/1000):', MS.level);
+  if (!newLevel) return;
   const newDate = prompt('输入新日期 (YYYY-MM-DD):', MS.date);
   if (!newDate) return;
   try {
     await api(`/api/rounds/${MS.roundId}`, {
       method: 'PUT',
-      body: JSON.stringify({ edition: parseInt(newEdition), date: newDate })
+      body: JSON.stringify({ edition: parseInt(newEdition), date: newDate, level: parseInt(newLevel) })
     });
     MS.edition = parseInt(newEdition);
     MS.date = newDate;
-    document.getElementById('fixture-title').innerHTML = `${MS.tname} - 第${MS.edition}届 <button onclick="editRoundInfo()" style="font-size:11px;padding:1px 10px;margin-left:8px;vertical-align:middle">✏️ 编辑</button>`;
+    MS.level = parseInt(newLevel);
+    document.getElementById('fixture-title').innerHTML = `${MS.tname} - 第${MS.edition}届 (${MS.level}级) <button onclick="editRoundInfo()" style="font-size:11px;padding:1px 10px;margin-left:8px;vertical-align:middle">✏️ 编辑</button>`;
     document.getElementById('round-edition').value = newEdition;
     document.getElementById('round-date').value = newDate;
     document.getElementById('save-round-status').textContent = '';
@@ -533,31 +548,114 @@ function updateLive() {
     else { st[f.i2].wins++; st[f.i1].losses++; }
   }
   st.sort((a, b) => b.wins - a.wins || (b.pf - b.pa) - (a.pf - a.pa));
-  const d = Math.round(1000 / n);
+  const level = MS.level || 1000;
+  const d = Math.round(level / n);
   let h = `<table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>得分</th><th>失分</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
   st.forEach((s, i) => {
-    h += `<tr><td>${i+1 <= 3 ? ['🥇','🥈','🥉'][i] : i+1}</td><td>${s.label}</td><td>${s.wins}</td><td>${s.losses}</td><td>${s.pf}</td><td>${s.pa}</td><td>${s.pf-s.pa}</td><td><strong>${1000-d*i}</strong></td></tr>`;
+    h += `<tr><td>${i+1 <= 3 ? ['🥇','🥈','🥉'][i] : i+1}</td><td>${s.label}</td><td>${s.wins}</td><td>${s.losses}</td><td>${s.pf}</td><td>${s.pa}</td><td>${s.pf-s.pa}</td><td><strong>${level-d*i}</strong></td></tr>`;
   });
-  h += `</tbody></table><p style="margin-top:8px;color:#718096;font-size:13px">参赛: ${n} | d=${d}</p>`;
+  h += `</tbody></table><p style="margin-top:8px;color:#718096;font-size:13px">参赛: ${n} | 级别: ${level} | d=${d}</p>`;
   document.getElementById('live-rankings').innerHTML = h;
 }
 
 // ==================== Rankings ====================
+let currentLowKey = null;
+
 async function loadRankings() {
   const el = document.getElementById('rankings-content');
   try {
     await ensurePlayers();
     const points = await api('/api/points');
-    const tournaments = await api('/api/tournaments');
+    // Collect all unique tournament keys (e.g. "国王杯(1000级)") from player data
+    const allKeys = {};
+    for (const p of points) {
+      for (const key in p.tournaments) allKeys[key] = true;
+    }
+    const sortedAll = Object.keys(allKeys).sort();
+    // Compute all low keys (level < 750) for currentLowKey init
+    const allLowKeys = [];
+    for (const key of sortedAll) {
+      const m = key.match(/\((\d+)级\)$/);
+      const level = m ? parseInt(m[1]) : 1000;
+      if (level < 750) allLowKeys.push(key);
+    }
+    // Determine default low tournament (most recent by date)
+    if (!currentLowKey && allLowKeys.length) {
+      const tournaments = await api('/api/tournaments');
+      const tourData = await Promise.all(tournaments.map(async (t) => {
+        const rounds = await api(`/api/tournaments/${t.id}/rounds`);
+        return { ...t, rounds };
+      }));
+      let mostRecent = null;
+      for (const tour of tourData) {
+        for (const round of tour.rounds) {
+          const key = `${tour.name}(${round.round_level}级)`;
+          if (allLowKeys.includes(key)) {
+            if (!mostRecent || round.date > mostRecent.date) {
+              mostRecent = { key, date: round.date };
+            }
+          }
+        }
+      }
+      currentLowKey = mostRecent ? mostRecent.key : allLowKeys[0];
+    } else if (!currentLowKey) {
+      currentLowKey = null;
+    }
+    function getGenderKeys(gender) {
+      const has = {};
+      for (const p of points) {
+        if (p.gender !== gender) continue;
+        for (const k in p.tournaments) has[k] = true;
+      }
+      const high = [];
+      const low = [];
+      for (const key of sortedAll) {
+        const m = key.match(/\((\d+)级\)$/);
+        const level = m ? parseInt(m[1]) : 1000;
+        if (level >= 750) {
+          if (has[key]) high.push(key);
+        } else {
+          low.push(key);
+        }
+      }
+      high.sort((a, b) => {
+        const la = parseInt(a.match(/\((\d+)级\)$/)?.[1] || 1000);
+        const lb = parseInt(b.match(/\((\d+)级\)$/)?.[1] || 1000);
+        return la !== lb ? lb - la : a.localeCompare(b);
+      });
+      return { high, low };
+    }
     function renderRankTable(players, label) {
       if (!players.length) return '';
-      let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3><table><thead><tr><th>#</th><th>姓名</th>${tournaments.map(t => `<th>${t.name}</th>`).join('')}<th>总积分</th></tr></thead><tbody>`;
+      const gk = getGenderKeys(players[0].gender);
+      const highKeys = gk.high;
+      const lowKeys = gk.low;
+      let lowKey = currentLowKey;
+      if (lowKeys.length && (!lowKey || !lowKeys.includes(lowKey))) {
+        lowKey = lowKeys[0];
+      }
+      let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
+      h += `<table><thead><tr><th>#</th><th>姓名</th>`;
+      for (const key of highKeys) h += `<th>${key}</th>`;
+      if (lowKeys.length) h += `<th onclick="toggleLowDropdown(this)" style="cursor:pointer;user-select:none;position:relative">
+        <span class="low-icon">▶</span> ${lowKey}
+        <div class="low-dd" onclick="event.stopPropagation()" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #e2e8f0;border-radius:4px;padding:4px;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.15);white-space:nowrap">
+          <select class="low-sel" onchange="changeLowTournament(this)" style="padding:4px;border-radius:4px">
+            ${lowKeys.map(k => `<option value="${k}" ${k === lowKey ? 'selected' : ''}>${k}</option>`).join('')}
+          </select>
+        </div>
+      </th>`;
+      h += `<th>总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
         const rc = i === 0 ? 'badge-gold' : i === 1 ? 'badge-silver' : i === 2 ? 'badge-bronze' : '';
         h += `<tr><td><span class="badge ${rc}">${i + 1}</span></td><td><strong>${displayName(p)}</strong></td>`;
-        for (const tour of tournaments) {
-          const t = p.tournaments[tour.name];
+        for (const key of highKeys) {
+          const t = p.tournaments[key];
           h += `<td>${t ? t.points : 0}${t?.deducted ? '<br><small style="color:#e53e3e">(扣分)</small>' : ''}</td>`;
+        }
+        if (lowKeys.length) {
+          const lt = lowKey ? p.tournaments[lowKey] : null;
+          h += `<td>${lt ? lt.points : 0}${lt?.deducted ? '<br><small style="color:#e53e3e">(扣分)</small>' : ''}</td>`;
         }
         h += `<td><strong>${p.total_points}</strong></td></tr>`;
       });
@@ -568,6 +666,7 @@ async function loadRankings() {
     const femalePoints = points.filter(p => p.gender === 'female').sort((a, b) => b.total_points - a.total_points);
     let html = renderRankTable(malePoints, '男子');
     html += renderRankTable(femalePoints, '女子');
+    const tournaments = await api('/api/tournaments');
     const tourData = await Promise.all(tournaments.map(async (t) => {
       const rounds = await api(`/api/tournaments/${t.id}/rounds`);
       return { ...t, rounds };
@@ -576,18 +675,39 @@ async function loadRankings() {
       b.rounds[0].date.localeCompare(a.rounds[0].date)
     );
     for (const tour of sortedTours) {
-      const latest = tour.rounds[0];
-      const rd = await api(`/api/rankings/${latest.id}`);
-      html += `<div class="card"><h3>${tour.name} - 第${latest.edition}届 (${latest.date}) | d=${rd.d}</h3>
-        <table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
-      for (const r of rd.rankings) {
-        const name = r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id);
-        html += `<tr><td>${r.rank <= 3 ? ['🥇','🥈','🥉'][r.rank-1] : r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
+      for (const round of tour.rounds) {
+        const rd = await api(`/api/rankings/${round.id}`);
+        html += `<div class="card"><h3>${tour.name} - 第${round.edition}届 (${round.date}) | ${round.round_level}级 | d=${rd.d}</h3>
+          <table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
+        for (const r of rd.rankings) {
+          const name = r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id);
+          html += `<tr><td>${r.rank <= 3 ? ['🥇','🥈','🥉'][r.rank-1] : r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
+        }
+        html += `</tbody></table></div>`;
       }
-      html += `</tbody></table></div>`;
     }
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div>`; }
+}
+
+function toggleLowDropdown(th) {
+  const dd = th.querySelector('.low-dd');
+  const icon = th.querySelector('.low-icon');
+  if (!dd) return;
+  if (dd.style.display === 'none' || !dd.style.display) {
+    dd.style.display = 'block';
+    icon.textContent = '▼';
+  } else {
+    dd.style.display = 'none';
+    icon.textContent = '▶';
+  }
+}
+
+function changeLowTournament(sel) {
+  currentLowKey = sel.value;
+  document.querySelectorAll('.low-dd').forEach(d => d.style.display = 'none');
+  document.querySelectorAll('.low-icon').forEach(i => i.textContent = '▶');
+  loadRankings();
 }
 
 // ==================== Query by Tournament + Edition ====================
@@ -617,7 +737,7 @@ async function queryRounds() {
     for (const round of data) {
       html += `<div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
-          <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date})</h3>`;
+          <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || round.level || 1000}级</h3>`;
 
       html += `<h4>排名</h4><table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
       for (const r of round.ranking.rankings) {
@@ -721,8 +841,8 @@ async function queryPlayer() {
     </div>`;
 
     if (data.points_history.length) {
-      html += `<div class="card"><h3>比赛记录</h3><table><thead><tr><th>赛事</th><th>届</th><th>日期</th><th>排名</th><th>胜/负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
-      for (const h of data.points_history) html += `<tr><td>${h.tournament}</td><td>第${h.edition}届</td><td>${h.date}</td><td>第${h.rank}名</td><td>${h.wins}胜 ${h.losses}负</td><td>${h.net_points}</td><td>${h.points_earned}</td></tr>`;
+      html += `<div class="card"><h3>比赛记录</h3><table><thead><tr><th>赛事</th><th>届</th><th>级别</th><th>日期</th><th>排名</th><th>胜/负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
+      for (const h of data.points_history) html += `<tr><td>${h.tournament}</td><td>第${h.edition}届</td><td>${h.level || 1000}级</td><td>${h.date}</td><td>第${h.rank}名</td><td>${h.wins}胜 ${h.losses}负</td><td>${h.net_points}</td><td>${h.points_earned}</td></tr>`;
       html += `</tbody></table></div>`;
     } else html += `<div class="card"><div class="loading">暂无比赛记录</div></div>`;
     el.innerHTML = html;

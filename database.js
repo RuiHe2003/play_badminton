@@ -33,7 +33,8 @@ function createTables() {
   db.run(`CREATE TABLE IF NOT EXISTS tournaments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('singles', 'mens_doubles', 'mixed_doubles'))
+    type TEXT NOT NULL CHECK(type IN ('singles', 'mens_doubles', 'mixed_doubles')),
+    level INTEGER NOT NULL DEFAULT 1000
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS rounds (
@@ -42,6 +43,7 @@ function createTables() {
     edition INTEGER NOT NULL DEFAULT 1,
     round_number INTEGER NOT NULL,
     date TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1000,
     FOREIGN KEY (tournament_id) REFERENCES tournaments(id)
   )`);
 
@@ -77,15 +79,17 @@ function createTables() {
   try { db.run(`ALTER TABLE players ADD COLUMN bio TEXT DEFAULT ''`); } catch(e) {}
   try { db.run(`ALTER TABLE players ADD COLUMN avatar TEXT DEFAULT ''`); } catch(e) {}
   try { db.run(`ALTER TABLE players ADD COLUMN real_name TEXT DEFAULT ''`); } catch(e) {}
+  try { db.run(`ALTER TABLE tournaments ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
+  try { db.run(`ALTER TABLE rounds ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
 }
 
 function seedTournaments() {
   const existing = db.exec(`SELECT COUNT(*) as cnt FROM tournaments`);
   if (existing[0].values[0][0] === 0) {
-    const s = db.prepare(`INSERT INTO tournaments (name, type) VALUES (?, ?)`);
-    s.run(['集帅杯', 'singles']);
-    s.run(['国王杯', 'mixed_doubles']);
-    s.run(['龙王杯', 'mens_doubles']);
+    const s = db.prepare(`INSERT INTO tournaments (name, type, level) VALUES (?, ?, ?)`);
+    s.run(['集帅杯', 'singles', 1000]);
+    s.run(['国王杯', 'mixed_doubles', 1000]);
+    s.run(['龙王杯', 'mens_doubles', 1000]);
     s.free();
   }
 

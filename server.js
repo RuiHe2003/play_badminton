@@ -18,7 +18,8 @@ const sleepTimer = setInterval(() => {
     console.log(`已闲置 ${IDLE_TIMEOUT / 60000} 分钟，进入休眠...`);
     clearInterval(sleepTimer);
     saveDatabase();
-    process.exit(0);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000);
   }
 }, 30000);
 
@@ -112,17 +113,18 @@ app.delete('/api/players/:id', (req, res) => {
 // ==================== Tournaments ====================
 
 app.get('/api/tournaments', (req, res) => {
-  res.json(query('SELECT id, name, type FROM tournaments'));
+  res.json(query('SELECT id, name, type, level FROM tournaments'));
 });
 
 app.post('/api/tournaments', (req, res) => {
-  const { name, type } = req.body;
+  const { name, type, level } = req.body;
   if (!name || !type) return res.status(400).json({ error: '需要名称和类型' });
   if (!['singles', 'mens_doubles', 'mixed_doubles'].includes(type)) return res.status(400).json({ error: '类型无效' });
+  const lvl = level || 1000;
   try {
-    query('INSERT INTO tournaments (name, type) VALUES (?, ?)', [name, type]);
+    query('INSERT INTO tournaments (name, type, level) VALUES (?, ?, ?)', [name, type, lvl]);
     const id = query('SELECT id FROM tournaments WHERE name = ?', [name])[0]?.id;
-    res.json({ id, name, type });
+    res.json({ id, name, type, level: lvl });
   } catch (e) {
     res.status(400).json({ error: '该赛事已存在' });
   }
@@ -132,7 +134,7 @@ app.post('/api/tournaments', (req, res) => {
 
 app.get('/api/tournaments/:id/rounds', (req, res) => {
   const rounds = query(`
-    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date,
+    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date, r.level as round_level,
            t.name as tournament_name, t.type as tournament_type
     FROM rounds r
     JOIN tournaments t ON r.tournament_id = t.id
@@ -144,7 +146,7 @@ app.get('/api/tournaments/:id/rounds', (req, res) => {
 
 app.get('/api/rounds', (req, res) => {
   const rounds = query(`
-    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date,
+    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date, r.level as round_level,
            t.name as tournament_name, t.type as tournament_type
     FROM rounds r
     JOIN tournaments t ON r.tournament_id = t.id
@@ -154,7 +156,7 @@ app.get('/api/rounds', (req, res) => {
 });
 
 app.post('/api/rounds', (req, res) => {
-  const { tournament_id, edition, date, participants } = req.body;
+  const { tournament_id, edition, date, participants, level } = req.body;
   if (!tournament_id || !edition || !date || !participants || participants.length < 2) {
     return res.status(400).json({ error: '需要赛事ID、届数、日期和至少2个参赛队伍' });
   }
@@ -162,16 +164,18 @@ app.post('/api/rounds', (req, res) => {
   const tournament = query('SELECT * FROM tournaments WHERE id = ?', [tournament_id])[0];
   if (!tournament) return res.status(400).json({ error: '赛事不存在' });
 
+  const lvl = level || 1000;
+
   // 检查是否已有该赛事该届的轮次，有则复用
   const existing = query('SELECT id FROM rounds WHERE tournament_id = ? AND edition = ? ORDER BY id DESC LIMIT 1', [tournament_id, edition]);
   let roundId;
   if (existing.length) {
     roundId = existing[0].id;
-    query('UPDATE rounds SET date = ? WHERE id = ?', [date, roundId]);
+    query('UPDATE rounds SET date = ?, level = ? WHERE id = ?', [date, lvl, roundId]);
     query('DELETE FROM matches WHERE round_id = ?', [roundId]);
     query('DELETE FROM teams WHERE round_id = ?', [roundId]);
   } else {
-    query('INSERT INTO rounds (tournament_id, edition, round_number, date) VALUES (?, ?, 1, ?)', [tournament_id, edition, date]);
+    query('INSERT INTO rounds (tournament_id, edition, round_number, date, level) VALUES (?, ?, 1, ?, ?)', [tournament_id, edition, date, lvl]);
     roundId = query('SELECT id FROM rounds WHERE tournament_id = ? AND edition = ? ORDER BY id DESC LIMIT 1', [tournament_id, edition])[0]?.id;
   }
 
@@ -183,7 +187,7 @@ app.post('/api/rounds', (req, res) => {
     }
   }
 
-  res.json({ id: roundId, edition, round_number: 1, date });
+  res.json({ id: roundId, edition, round_number: 1, date, level: lvl });
 });
 
 // ==================== Teams ====================
@@ -244,12 +248,15 @@ app.delete('/api/matches/:id', (req, res) => {
 app.put('/api/rounds/:id', (req, res) => {
   const round = query('SELECT id FROM rounds WHERE id = ?', [req.params.id])[0];
   if (!round) return res.status(404).json({ error: '轮次不存在' });
-  const { edition, date } = req.body;
+  const { edition, date, level } = req.body;
   if (edition !== undefined) {
     query('UPDATE rounds SET edition = ? WHERE id = ?', [edition, req.params.id]);
   }
   if (date !== undefined) {
     query('UPDATE rounds SET date = ? WHERE id = ?', [date, req.params.id]);
+  }
+  if (level !== undefined) {
+    query('UPDATE rounds SET level = ? WHERE id = ?', [level, req.params.id]);
   }
   res.json({ success: true });
 });
@@ -285,9 +292,14 @@ app.get('/api/matches/:roundId', (req, res) => {
 
 // ==================== Ranking Calculation ====================
 
-function calculateRoundRankings(roundId) {
+function calculateRoundRankings(roundId, level) {
   const teams = query('SELECT * FROM teams WHERE round_id = ?', [roundId]);
   const matches = query('SELECT * FROM matches WHERE round_id = ?', [roundId]);
+
+  if (level === undefined) {
+    const round = query('SELECT level FROM rounds WHERE id = ?', [roundId])[0];
+    level = round ? round.level : 1000;
+  }
 
   const stats = {};
   for (const t of teams) {
@@ -311,18 +323,18 @@ function calculateRoundRankings(roundId) {
   });
 
   const n = rankings.length;
-  const d = Math.round(1000 / n);
+  const d = Math.round(level / n);
   rankings = rankings.map((r, idx) => ({
     ...r, rank: idx + 1,
     net_points: r.points_for - r.points_against,
-    points_earned: 1000 - d * idx
+    points_earned: level - d * idx
   }));
 
   return { rankings, d, teamCount: n };
 }
 
 app.get('/api/rankings/:roundId', (req, res) => {
-  res.json(calculateRoundRankings(parseInt(req.params.roundId)));
+  res.json(calculateRoundRankings(parseInt(req.params.roundId), undefined));
 });
 
 // ==================== Points Calculation ====================
@@ -337,68 +349,82 @@ app.get('/api/points', (req, res) => {
   }
 
   for (const tour of tournaments) {
-    const allRounds = query('SELECT * FROM rounds WHERE tournament_id = ? ORDER BY date ASC, id ASC', [tour.id]);
+    const allRounds = query('SELECT * FROM rounds WHERE tournament_id = ? ORDER BY level, date ASC, id ASC', [tour.id]);
     if (!allRounds.length) continue;
 
-    const acc = {};
-    for (const p of allPlayers) {
-      acc[p.id] = { points: 0, lastD: null };
+    // Group rounds by level
+    const levelGroups = {};
+    for (const round of allRounds) {
+      const lvl = round.level;
+      if (!levelGroups[lvl]) levelGroups[lvl] = [];
+      levelGroups[lvl].push(round);
     }
 
-    for (const round of allRounds) {
-      const { rankings, d } = calculateRoundRankings(round.id);
-      const participants = new Set();
+    for (const [lvlStr, rounds] of Object.entries(levelGroups)) {
+      const lvl = parseInt(lvlStr);
+      const acc = {};
+      for (const p of allPlayers) {
+        acc[p.id] = { points: 0, lastD: null };
+      }
 
-      for (const rank of rankings) {
-        participants.add(rank.player1_id);
-        if (acc[rank.player1_id]) {
-          acc[rank.player1_id].points = rank.points_earned;
-          acc[rank.player1_id].lastD = d;
+      for (const round of rounds) {
+        const { rankings, d } = calculateRoundRankings(round.id, lvl);
+        const participants = new Set();
+
+        for (const rank of rankings) {
+          participants.add(rank.player1_id);
+          if (acc[rank.player1_id]) {
+            acc[rank.player1_id].points = rank.points_earned;
+            acc[rank.player1_id].lastD = d;
+          }
+          if (rank.player2_id) {
+            participants.add(rank.player2_id);
+            if (acc[rank.player2_id]) {
+              acc[rank.player2_id].points = rank.points_earned;
+              acc[rank.player2_id].lastD = d;
+            }
+          }
         }
-        if (rank.player2_id) {
-          participants.add(rank.player2_id);
-          if (acc[rank.player2_id]) {
-            acc[rank.player2_id].points = rank.points_earned;
-            acc[rank.player2_id].lastD = d;
+
+        for (const p of allPlayers) {
+          if (!participants.has(p.id) && acc[p.id].lastD !== null) {
+            acc[p.id].points = Math.max(0, acc[p.id].points - acc[p.id].lastD);
           }
         }
       }
 
-      for (const p of allPlayers) {
-        if (!participants.has(p.id) && acc[p.id].lastD !== null) {
-          acc[p.id].points = Math.max(0, acc[p.id].points - acc[p.id].lastD);
-        }
+      const latestRound = rounds[rounds.length - 1];
+      const latestRank = calculateRoundRankings(latestRound.id, lvl);
+      const latestParticipants = new Set();
+      for (const rank of latestRank.rankings) {
+        latestParticipants.add(rank.player1_id);
+        if (rank.player2_id) latestParticipants.add(rank.player2_id);
       }
-    }
 
-    const latestRound = allRounds[allRounds.length - 1];
-    const latestRank = calculateRoundRankings(latestRound.id);
-    const latestParticipants = new Set();
-    for (const rank of latestRank.rankings) {
-      latestParticipants.add(rank.player1_id);
-      if (rank.player2_id) latestParticipants.add(rank.player2_id);
-    }
-
-    for (const p of allPlayers) {
-      if (acc[p.id].points === 0 && acc[p.id].lastD === null) continue;
-      if (latestParticipants.has(p.id)) {
-        const rank = latestRank.rankings.find(r => r.player1_id === p.id || r.player2_id === p.id);
-        playerPoints[p.id].tournaments[tour.name] = {
-          points: acc[p.id].points, edition: latestRound.edition,
-          participated: true, rank: rank.rank, d: acc[p.id].lastD
-        };
-      } else {
-        playerPoints[p.id].tournaments[tour.name] = {
-          points: acc[p.id].points, edition: latestRound.edition,
-          participated: false, deducted: true, rank: null, d: acc[p.id].lastD
-        };
+      const key = tour.name + '(' + lvl + '级)';
+      for (const p of allPlayers) {
+        if (acc[p.id].points === 0 && acc[p.id].lastD === null) continue;
+        if (latestParticipants.has(p.id)) {
+          const rank = latestRank.rankings.find(r => r.player1_id === p.id || r.player2_id === p.id);
+          playerPoints[p.id].tournaments[key] = {
+            points: acc[p.id].points, edition: latestRound.edition, level: lvl,
+            participated: true, rank: rank.rank, d: acc[p.id].lastD
+          };
+        } else {
+          playerPoints[p.id].tournaments[key] = {
+            points: acc[p.id].points, edition: latestRound.edition, level: lvl,
+            participated: false, deducted: true, rank: null, d: acc[p.id].lastD
+          };
+        }
       }
     }
   }
 
   for (const pid in playerPoints) {
     let total = 0;
-    for (const tname in playerPoints[pid].tournaments) total += playerPoints[pid].tournaments[tname].points;
+    for (const tname in playerPoints[pid].tournaments) {
+      if (playerPoints[pid].tournaments[tname].level >= 750) total += playerPoints[pid].tournaments[tname].points;
+    }
     playerPoints[pid].total_points = total;
   }
 
@@ -427,7 +453,7 @@ app.get('/api/editions', (req, res) => {
 app.get('/api/query/edition/:edition', (req, res) => {
   const edition = parseInt(req.params.edition);
   const rounds = query(`
-    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date,
+    SELECT r.id, r.tournament_id, r.edition, r.round_number, r.date, r.level as round_level,
            t.name as tournament_name, t.type as tournament_type
     FROM rounds r
     JOIN tournaments t ON r.tournament_id = t.id
@@ -436,7 +462,7 @@ app.get('/api/query/edition/:edition', (req, res) => {
   `, [edition]);
   const result = [];
   for (const round of rounds) {
-    const ranking = calculateRoundRankings(round.id);
+    const ranking = calculateRoundRankings(round.id, round.round_level);
     const teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
              p1.name as player1_name, p2.name as player2_name
@@ -458,7 +484,7 @@ app.get('/api/query/round/:roundId', (req, res) => {
     WHERE r.id = ?
   `, [req.params.roundId])[0];
   if (!round) return res.status(404).json({ error: '轮次不存在' });
-  const ranking = calculateRoundRankings(round.id);
+  const ranking = calculateRoundRankings(round.id, round.level);
   const teams = query(`
     SELECT t.id as team_id, t.player1_id, t.player2_id,
            p1.name as player1_name, p2.name as player2_name
@@ -498,7 +524,8 @@ app.get('/api/player/:name', (req, res) => {
   const pointsHistory = [];
 
   for (const rid of roundIds) {
-    const { rankings } = calculateRoundRankings(rid);
+    const roundInfo = query('SELECT level FROM rounds WHERE id = ?', [rid])[0];
+    const { rankings } = calculateRoundRankings(rid, roundInfo ? roundInfo.level : 1000);
     const round = query('SELECT r.*, t.name as tournament_name FROM rounds r JOIN tournaments t ON r.tournament_id = t.id WHERE r.id = ?', [rid])[0];
     const playerRank = rankings.find(r => r.player1_id === player.id || r.player2_id === player.id);
     if (playerRank && round) {
@@ -507,7 +534,7 @@ app.get('/api/player/:name', (req, res) => {
       if (playerRank.rank < bestRank) bestRank = playerRank.rank;
       pointsHistory.push({
         tournament: round.tournament_name, edition: round.edition, round: round.round_number, date: round.date,
-        rank: playerRank.rank, wins: playerRank.wins, losses: playerRank.losses,
+        level: round.level, rank: playerRank.rank, wins: playerRank.wins, losses: playerRank.losses,
         net_points: playerRank.net_points, points_earned: playerRank.points_earned
       });
     }
@@ -609,7 +636,7 @@ app.get('/api/rounds/lookup', (req, res) => {
   const { tournamentId, edition } = req.query;
   if (!tournamentId || !edition) return res.status(400).json({ error: '需要赛事ID和届数' });
   const round = query(`
-    SELECT r.id, r.tournament_id, r.edition, r.date,
+    SELECT r.id, r.tournament_id, r.edition, r.date, r.level as round_level,
            t.name as tournament_name, t.type as tournament_type
     FROM rounds r
     JOIN tournaments t ON r.tournament_id = t.id
@@ -650,7 +677,7 @@ app.get('/api/rounds/lookup', (req, res) => {
 app.get('/api/query/rounds', (req, res) => {
   const { tournamentId, edition } = req.query;
   let sql = `
-    SELECT r.id, r.tournament_id, r.edition, r.date,
+    SELECT r.id, r.tournament_id, r.edition, r.date, r.level as round_level,
            t.name as tournament_name, t.type as tournament_type
     FROM rounds r
     JOIN tournaments t ON r.tournament_id = t.id
@@ -663,7 +690,7 @@ app.get('/api/query/rounds', (req, res) => {
 
   const rounds = query(sql, params);
   for (const round of rounds) {
-    const ranking = calculateRoundRankings(round.id);
+    const ranking = calculateRoundRankings(round.id, round.round_level);
     round.ranking = ranking;
     round.teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
@@ -742,10 +769,12 @@ app.post('/api/auth/change-security', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+let server;
+
 async function start() {
   await initDatabase();
   db = getDb();
-  app.listen(PORT, () => console.log(`羽毛球积分系统已启动: http://localhost:${PORT}`));
+  server = app.listen(PORT, () => console.log(`羽毛球积分系统已启动: http://localhost:${PORT}`));
 }
 
 start();
