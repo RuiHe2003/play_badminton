@@ -388,7 +388,7 @@ app.get('/api/points', (req, res) => {
 
         for (const p of allPlayers) {
           if (!participants.has(p.id) && acc[p.id].lastD !== null) {
-            acc[p.id].points = Math.max(0, acc[p.id].points - acc[p.id].lastD);
+            acc[p.id].points = Math.max(0, acc[p.id].points - Math.floor(acc[p.id].lastD / 2));
           }
         }
       }
