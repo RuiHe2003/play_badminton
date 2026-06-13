@@ -655,11 +655,11 @@ async function loadRankings() {
         h += `<tr><td><span class="badge ${rc}">${i + 1}</span></td><td><strong>${displayName(p)}</strong></td>`;
         for (const key of highKeys) {
           const t = p.tournaments[key];
-          h += `<td>${t ? t.points : 0}${t?.deducted ? '<br><small style="color:#e53e3e">(扣分)</small>' : ''}</td>`;
+          h += `<td>${t ? t.points : 0}${t?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
         if (lowKeys.length) {
           const lt = lowKey ? p.tournaments[lowKey] : null;
-          h += `<td>${lt ? lt.points : 0}${lt?.deducted ? '<br><small style="color:#e53e3e">(扣分)</small>' : ''}</td>`;
+          h += `<td>${lt ? lt.points : 0}${lt?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
         h += `<td><strong>${p.total_points}</strong></td></tr>`;
       });
