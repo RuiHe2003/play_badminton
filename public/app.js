@@ -28,7 +28,7 @@ document.querySelectorAll('[data-tab]').forEach(link => {
     if (tab === 'home') loadHome();
     if (tab === 'rankings') loadRankings();
     if (tab === 'query') initQueryPage();
-    if (tab === 'player-query') document.getElementById('player-result').innerHTML = '';
+    if (tab === 'player-query') loadPlayerQueryList();
     if (tab === 'headtohead') document.getElementById('h2h-result').innerHTML = '';
   });
 });
@@ -1009,15 +1009,43 @@ async function deleteRound(rid) {
 }
 
 // ==================== Player Query ====================
+async function loadPlayerQueryList() {
+  const el = document.getElementById('player-result');
+  document.getElementById('query-player-name').value = '';
+  try {
+    const players = await api('/api/players');
+    let html = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">`;
+    for (const p of players) {
+      const dn = displayName(p);
+      const extra = dn !== p.name ? ` <small style="color:#718096;font-size:12px">(${p.name})</small>` : '';
+      html += `<div class="player-card" onclick="showPlayerDetail('${p.name.replace(/'/g, "\\'")}')" style="cursor:pointer;padding:16px;border:1px solid #e2e8f0;border-radius:8px;text-align:center;transition:box-shadow .2s" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.12)'" onmouseout="this.style.boxShadow='none'">
+        <div style="font-size:32px;margin-bottom:8px">${p.avatar ? `<img src="${p.avatar}" style="width:64px;height:64px;border-radius:50%;object-fit:cover">` : `<div style="width:64px;height:64px;border-radius:50%;background:#e2e8f0;display:inline-flex;align-items:center;justify-content:center;font-size:24px;color:#a0aec0">${p.name[0]}</div>`}</div>
+        <div><strong>${dn}</strong>${extra}</div>
+        <div style="font-size:13px;color:#718096;margin-top:4px">${p.gender === 'male' ? '男' : '女'}</div>
+      </div>`;
+    }
+    html += `</div>`;
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<div class="card"><div class="loading">加载失败</div></div>`; }
+}
+
 async function queryPlayer() {
   const name = document.getElementById('query-player-name').value.trim();
   if (!name) return alert('请输入选手姓名');
+  await showPlayerDetail(name);
+}
+
+let currentViewedPlayer = '';
+
+async function showPlayerDetail(name) {
+  currentViewedPlayer = name;
   const el = document.getElementById('player-result');
   el.innerHTML = '<div class="loading">查询中...</div>';
   try {
     const data = await api(`/api/player/${encodeURIComponent(name)}`);
     const p = data.player, s = data.stats;
-    let html = `<div class="player-stat-card">
+    let html = `<button onclick="loadPlayerQueryList()" style="margin-bottom:12px;font-size:13px;padding:4px 12px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">← 返回列表</button>
+    <div class="player-stat-card">
       <div style="display:flex;align-items:center;gap:16px">
         <div class="player-avatar" onclick="document.getElementById('avatar-input-${p.id}').click()" style="cursor:pointer">
           ${p.avatar ? `<img src="${p.avatar}" style="width:120px;height:120px;border-radius:50%;object-fit:cover">` : `<div style="width:120px;height:120px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:40px;color:#a0aec0">${p.name[0]}</div>`}
@@ -1051,6 +1079,77 @@ async function queryPlayer() {
       </div>
     </div>`;
 
+    html += `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3>🤝 主要搭档</h3>
+        <button onclick="editPartners(${p.id})" style="font-size:12px;padding:4px 12px">✏️ 设置</button>
+      </div>
+      <div id="partners-display-${p.id}" style="display:flex;gap:16px;margin-top:8px">
+        ${p.partners && p.partners.length ? p.partners.map(partner => `
+          <div onclick="showPlayerDetail('${partner.name.replace(/'/g, "\\'")}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;padding:12px 16px;border:1px solid #e2e8f0;border-radius:8px;transition:box-shadow .2s;flex:1" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.12)'" onmouseout="this.style.boxShadow='none'">
+            <div>${partner.avatar ? `<img src="${partner.avatar}" style="width:48px;height:48px;border-radius:50%;object-fit:cover">` : `<div style="width:48px;height:48px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#a0aec0">${partner.name[0]}</div>`}</div>
+            <div><strong>${displayName(partner)}</strong>${partner.real_name ? `<br><small style="color:#718096;font-size:12px">${partner.name}</small>` : ''}</div>
+          </div>
+        `).join('') : '<div style="color:#718096;font-size:14px;padding:8px 0">暂无设置主要搭档</div>'}
+      </div>
+      <div id="partners-edit-${p.id}" style="display:none;margin-top:8px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <select id="partner1-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="partner2-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="partner3-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button onclick="savePartners(${p.id})">💾 保存</button>
+          <button class="secondary" onclick="cancelEditPartners(${p.id})">取消</button>
+        </div>
+      </div>
+    </div>`;
+
+    // Rivals section
+    html += `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3>⚔️ 主要对手</h3>
+        <button onclick="editRivals(${p.id})" style="font-size:12px;padding:4px 12px">✏️ 设置</button>
+      </div>
+      <div id="rivals-display-${p.id}" style="display:flex;gap:16px;margin-top:8px">
+        ${p.rivals && p.rivals.length ? p.rivals.map(rival => `
+          <div onclick="goToHeadToHead('${p.name.replace(/'/g, "\\'")}','${rival.name.replace(/'/g, "\\'")}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;padding:12px 16px;border:1px solid #e2e8f0;border-radius:8px;transition:box-shadow .2s;flex:1" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.12)'" onmouseout="this.style.boxShadow='none'">
+            <div>${rival.avatar ? `<img src="${rival.avatar}" style="width:48px;height:48px;border-radius:50%;object-fit:cover">` : `<div style="width:48px;height:48px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#a0aec0">${rival.name[0]}</div>`}</div>
+            <div><strong>${displayName(rival)}</strong>${rival.real_name ? `<br><small style="color:#718096;font-size:12px">${rival.name}</small>` : ''}</div>
+          </div>
+        `).join('') : '<div style="color:#718096;font-size:14px;padding:8px 0">暂无设置主要对手</div>'}
+      </div>
+      <div id="rivals-edit-${p.id}" style="display:none;margin-top:8px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <select id="rival1-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="rival2-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="rival3-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="rival4-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+          <select id="rival5-select-${p.id}" style="flex:1;min-width:150px;padding:8px 12px;border:1px solid #d2d6dc;border-radius:6px;font-size:14px">
+            <option value="">清空</option>
+          </select>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button onclick="saveRivals(${p.id})">💾 保存</button>
+          <button class="secondary" onclick="cancelEditRivals(${p.id})">取消</button>
+        </div>
+      </div>
+    </div>`;
+
     if (data.points_history.length) {
       html += `<div class="card"><h3>比赛记录</h3><table><thead><tr><th>赛事</th><th>届</th><th>级别</th><th>日期</th><th>排名</th><th>胜/负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
       for (const h of data.points_history) html += `<tr><td>${h.tournament}</td><td>第${h.edition}届</td><td>${h.level || 1000}级</td><td>${h.date}</td><td>第${h.rank}名</td><td>${h.wins}胜 ${h.losses}负</td><td>${h.net_points}</td><td>${h.points_earned}</td></tr>`;
@@ -1058,6 +1157,89 @@ async function queryPlayer() {
     } else html += `<div class="card"><div class="loading">暂无比赛记录</div></div>`;
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">${e.message}</div></div>`; }
+}
+
+async function editPartners(id) {
+  document.getElementById(`partners-display-${id}`).style.display = 'none';
+  document.getElementById(`partners-edit-${id}`).style.display = 'block';
+  const players = await api('/api/players');
+  const s1 = document.getElementById(`partner1-select-${id}`);
+  const s2 = document.getElementById(`partner2-select-${id}`);
+  const s3 = document.getElementById(`partner3-select-${id}`);
+  const opts = players.filter(p => p.id !== id).map(p => `<option value="${p.id}">${displayName(p)}${p.real_name ? ' (' + p.name + ')' : ''}</option>`).join('');
+  s1.innerHTML = '<option value="">清空</option>' + opts;
+  s2.innerHTML = '<option value="">清空</option>' + opts;
+  s3.innerHTML = '<option value="">清空</option>' + opts;
+}
+
+async function savePartners(id) {
+  const partner1 = document.getElementById(`partner1-select-${id}`).value;
+  const partner2 = document.getElementById(`partner2-select-${id}`).value;
+  const partner3 = document.getElementById(`partner3-select-${id}`).value;
+  try {
+    await api(`/api/players/${id}/partners`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        partner1_id: partner1 ? parseInt(partner1) : null,
+        partner2_id: partner2 ? parseInt(partner2) : null,
+        partner3_id: partner3 ? parseInt(partner3) : null
+      })
+    });
+    await showPlayerDetail(currentViewedPlayer);
+  } catch (e) { alert('保存失败: ' + e.message); }
+}
+
+async function cancelEditPartners(id) {
+  document.getElementById(`partners-display-${id}`).style.display = 'flex';
+  document.getElementById(`partners-edit-${id}`).style.display = 'none';
+}
+
+async function editRivals(id) {
+  document.getElementById(`rivals-display-${id}`).style.display = 'none';
+  document.getElementById(`rivals-edit-${id}`).style.display = 'block';
+  const players = await api('/api/players');
+  const opts = players.filter(p => p.id !== id).map(p => `<option value="${p.id}">${displayName(p)}${p.real_name ? ' (' + p.name + ')' : ''}</option>`).join('');
+  document.getElementById(`rival1-select-${id}`).innerHTML = '<option value="">清空</option>' + opts;
+  document.getElementById(`rival2-select-${id}`).innerHTML = '<option value="">清空</option>' + opts;
+  document.getElementById(`rival3-select-${id}`).innerHTML = '<option value="">清空</option>' + opts;
+  document.getElementById(`rival4-select-${id}`).innerHTML = '<option value="">清空</option>' + opts;
+  document.getElementById(`rival5-select-${id}`).innerHTML = '<option value="">清空</option>' + opts;
+}
+
+async function saveRivals(id) {
+  const rival1 = document.getElementById(`rival1-select-${id}`).value;
+  const rival2 = document.getElementById(`rival2-select-${id}`).value;
+  const rival3 = document.getElementById(`rival3-select-${id}`).value;
+  const rival4 = document.getElementById(`rival4-select-${id}`).value;
+  const rival5 = document.getElementById(`rival5-select-${id}`).value;
+  try {
+    await api(`/api/players/${id}/rivals`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        rival1_id: rival1 ? parseInt(rival1) : null,
+        rival2_id: rival2 ? parseInt(rival2) : null,
+        rival3_id: rival3 ? parseInt(rival3) : null,
+        rival4_id: rival4 ? parseInt(rival4) : null,
+        rival5_id: rival5 ? parseInt(rival5) : null
+      })
+    });
+    await showPlayerDetail(currentViewedPlayer);
+  } catch (e) { alert('保存失败: ' + e.message); }
+}
+
+async function cancelEditRivals(id) {
+  document.getElementById(`rivals-display-${id}`).style.display = 'flex';
+  document.getElementById(`rivals-edit-${id}`).style.display = 'none';
+}
+
+function goToHeadToHead(name1, name2) {
+  document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
+  document.querySelector('[data-tab="headtohead"]').classList.add('active');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-headtohead').classList.add('active');
+  document.getElementById('h2h-name1').value = name1;
+  document.getElementById('h2h-name2').value = name2;
+  queryHeadToHead();
 }
 
 async function editBio(id) {

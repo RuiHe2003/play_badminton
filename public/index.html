@@ -150,7 +150,7 @@
       <h2>🔍 选手查询</h2>
       <div class="card">
         <div class="form-row">
-          <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名">
+          <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名" onkeydown="if(event.key==='Enter')queryPlayer()">
           <button onclick="queryPlayer()">查询</button>
         </div>
       </div>

@@ -4,25 +4,6 @@ const { initDatabase, saveDatabase, getDb } = require('./database');
 
 const app = express();
 
-// ==================== Auto Sleep ====================
-let lastAccessTime = Date.now();
-const IDLE_TIMEOUT = (parseInt(process.env.IDLE_TIMEOUT_MINUTES) || 3) * 60 * 1000;
-
-app.use((req, res, next) => {
-  lastAccessTime = Date.now();
-  next();
-});
-
-const sleepTimer = setInterval(() => {
-  if (Date.now() - lastAccessTime > IDLE_TIMEOUT) {
-    console.log(`已闲置 ${IDLE_TIMEOUT / 60000} 分钟，进入休眠...`);
-    clearInterval(sleepTimer);
-    saveDatabase();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 5000);
-  }
-}, 30000);
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -49,7 +30,7 @@ function query(sql, params = []) {
 // ==================== Players ====================
 
 app.get('/api/players', (req, res) => {
-  res.json(query('SELECT id, name, gender, real_name FROM players ORDER BY name'));
+  res.json(query('SELECT id, name, gender, real_name, avatar FROM players ORDER BY name'));
 });
 
 app.post('/api/players', (req, res) => {
@@ -615,8 +596,8 @@ app.get('/api/query/round/:roundId', (req, res) => {
 // ==================== Player Stats ====================
 
 app.get('/api/player/:name', (req, res) => {
-  let player = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE name = ?', [req.params.name])[0];
-  if (!player) player = query('SELECT id, name, gender, bio, avatar, real_name FROM players WHERE real_name = ?', [req.params.name])[0];
+  let player = query('SELECT id, name, gender, bio, avatar, real_name, partner1_id, partner2_id, partner3_id, rival1_id, rival2_id, rival3_id, rival4_id, rival5_id FROM players WHERE name = ?', [req.params.name])[0];
+  if (!player) player = query('SELECT id, name, gender, bio, avatar, real_name, partner1_id, partner2_id, partner3_id, rival1_id, rival2_id, rival3_id, rival4_id, rival5_id FROM players WHERE real_name = ?', [req.params.name])[0];
   if (!player) return res.status(404).json({ error: '选手不存在' });
 
   const roundIds = [...new Set([
@@ -629,11 +610,16 @@ app.get('/api/player/:name', (req, res) => {
   const pointsHistory = [];
 
   for (const rid of roundIds) {
-    const roundInfo = query('SELECT level FROM rounds WHERE id = ?', [rid])[0];
-    const { rankings } = calculateRoundRankings(rid, roundInfo ? roundInfo.level : 1000);
     const round = query('SELECT r.*, t.name as tournament_name FROM rounds r JOIN tournaments t ON r.tournament_id = t.id WHERE r.id = ?', [rid])[0];
-    const playerRank = rankings.find(r => r.player1_id === player.id || r.player2_id === player.id);
-    if (playerRank && round) {
+    if (!round) continue;
+    const isFree = round.tournament_name === '狗王杯';
+    const { rankings } = isFree
+      ? calculatePlayerRankings(rid, round.level)
+      : calculateRoundRankings(rid, round.level);
+    const playerRank = isFree
+      ? rankings.find(r => r.player_id === player.id)
+      : rankings.find(r => r.player1_id === player.id || r.player2_id === player.id);
+    if (playerRank) {
       totalWins += playerRank.wins;
       totalMatches += playerRank.wins + playerRank.losses;
       if (playerRank.rank < bestRank) bestRank = playerRank.rank;
@@ -649,8 +635,26 @@ app.get('/api/player/:name', (req, res) => {
   if (!player.bio) player.bio = '';
   if (!player.avatar) player.avatar = '';
 
+  // Fetch partners
+  const partners = [];
+  for (const pid of [player.partner1_id, player.partner2_id, player.partner3_id]) {
+    if (pid) {
+      const p = query('SELECT id, name, real_name, gender, avatar FROM players WHERE id = ?', [pid])[0];
+      if (p) partners.push(p);
+    }
+  }
+
+  // Fetch rivals
+  const rivals = [];
+  for (const pid of [player.rival1_id, player.rival2_id, player.rival3_id, player.rival4_id, player.rival5_id]) {
+    if (pid) {
+      const p = query('SELECT id, name, real_name, gender, avatar FROM players WHERE id = ?', [pid])[0];
+      if (p) rivals.push(p);
+    }
+  }
+
   res.json({
-    player,
+    player: { ...player, partners, rivals },
     stats: {
       total_matches: totalMatches, total_wins: totalWins,
       win_rate: totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0,
@@ -658,6 +662,38 @@ app.get('/api/player/:name', (req, res) => {
     },
     points_history: pointsHistory
   });
+});
+
+app.put('/api/players/:id/partners', (req, res) => {
+  const id = parseInt(req.params.id);
+  const player = query('SELECT * FROM players WHERE id = ?', [id])[0];
+  if (!player) return res.status(404).json({ error: '选手不存在' });
+  const { partner1_id, partner2_id, partner3_id } = req.body;
+  for (const [key, val] of [['partner1_id', partner1_id], ['partner2_id', partner2_id], ['partner3_id', partner3_id]]) {
+    if (val !== undefined) {
+      if (val !== null && !query('SELECT id FROM players WHERE id = ?', [val]).length) {
+        return res.status(400).json({ error: '搭档不存在' });
+      }
+      query(`UPDATE players SET ${key} = ? WHERE id = ?`, [val, id]);
+    }
+  }
+  res.json({ success: true });
+});
+
+app.put('/api/players/:id/rivals', (req, res) => {
+  const id = parseInt(req.params.id);
+  const player = query('SELECT * FROM players WHERE id = ?', [id])[0];
+  if (!player) return res.status(404).json({ error: '选手不存在' });
+  const { rival1_id, rival2_id, rival3_id, rival4_id, rival5_id } = req.body;
+  for (const [key, val] of [['rival1_id', rival1_id], ['rival2_id', rival2_id], ['rival3_id', rival3_id], ['rival4_id', rival4_id], ['rival5_id', rival5_id]]) {
+    if (val !== undefined) {
+      if (val !== null && !query('SELECT id FROM players WHERE id = ?', [val]).length) {
+        return res.status(400).json({ error: '对手不存在' });
+      }
+      query(`UPDATE players SET ${key} = ? WHERE id = ?`, [val, id]);
+    }
+  }
+  res.json({ success: true });
 });
 
 // ==================== Head to Head ====================

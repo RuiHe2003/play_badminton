@@ -81,6 +81,14 @@ function createTables() {
   try { db.run(`ALTER TABLE players ADD COLUMN real_name TEXT DEFAULT ''`); } catch(e) {}
   try { db.run(`ALTER TABLE tournaments ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
   try { db.run(`ALTER TABLE rounds ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN partner1_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN partner2_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN partner3_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN rival1_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN rival2_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN rival3_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN rival4_id INTEGER DEFAULT NULL`); } catch(e) {}
+  try { db.run(`ALTER TABLE players ADD COLUMN rival5_id INTEGER DEFAULT NULL`); } catch(e) {}
 }
 
 function seedTournaments() {
