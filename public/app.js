@@ -949,9 +949,10 @@ async function queryRounds() {
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
           <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || round.level || 1000}级</h3>`;
 
-      html += `<h4>排名</h4><table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
+      const isFree = round.tournament_name === '狗王杯';
+      html += `<h4>排名</h4><table><thead><tr><th>#</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
       for (const r of round.ranking.rankings) {
-        const name = r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id);
+        const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
         html += `<tr><td>${r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
       }
       html += `</tbody></table>`;

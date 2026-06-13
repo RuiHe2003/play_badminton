@@ -423,7 +423,7 @@ function calculatePlayerRankings(roundId, level) {
 
   const n = rankings.length;
   const d = n ? Math.round(level / n) : 0;
-  rankings = rankings.map((r, idx) => ({ ...r, rank: idx + 1, points_earned: Math.max(0, level - d * idx) }));
+  rankings = rankings.map((r, idx) => ({ ...r, rank: idx + 1, net_points: r.pf - r.pa, points_earned: Math.max(0, level - d * idx) }));
 
   return { rankings, d };
 }
@@ -795,7 +795,7 @@ app.get('/api/query/rounds', (req, res) => {
 
   const rounds = query(sql, params);
   for (const round of rounds) {
-    const ranking = calculateRoundRankings(round.id, round.round_level);
+    const ranking = round.tournament_name === '狗王杯' ? calculatePlayerRankings(round.id, round.round_level) : calculateRoundRankings(round.id, round.round_level);
     round.ranking = ranking;
     round.teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
