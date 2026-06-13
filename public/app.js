@@ -89,7 +89,7 @@ async function loadHome() {
         <div class="home-card-icon">🏸</div>
         <h2 class="home-card-title">赛事介绍</h2>
         <p class="home-card-body">
-          本系列羽毛球赛事自2024年正式开启，共设<strong>集帅杯</strong>（男单）、<strong>国王杯</strong>（混双）、<strong>龙王杯</strong>（双打）、<strong>希王杯</strong>（混双）四大竞赛项目。全部赛事均采用单循环赛制，参赛队伍/选手需两两依次完成对决。赛事最终依据总胜局数、净胜分数综合核算成绩，并以此完成最终名次排名。
+          本系列羽毛球赛事自2024年正式开启，设<strong>集帅杯</strong>（男单）、<strong>国王杯</strong>（混双）、<strong>龙王杯</strong>（男双）三大竞赛项目，采用单循环赛制，赛事依据总胜局数、净胜分数核算名次。后增设<strong>希王杯</strong>（混双）和<strong>狗王杯</strong>（男双非固搭）赛事。
         </p>
       </div>
       <div class="home-image-wrapper">
@@ -102,15 +102,15 @@ async function loadHome() {
       <div class="home-card-body">
         <div class="rule-item">
           <div class="rule-label">单轮排名</div>
-          <div class="rule-desc">每轮比赛按胜场数排名，胜场相同则净胜分高者排名靠前。各赛事分为 1000 级、750 级、500 级、300 级四个级别，第1名得该赛事级别分数，之后每名递减 d 分（d = 赛事级别 ÷ 参赛队伍数，四舍五入）。</div>
+          <div class="rule-desc">每轮比赛按胜场数排名，胜场相同则净胜分高者排名靠前。各赛事分为 1000 级、750 级、500 级、300 级四个级别，第1名得该赛事级别分数，之后每名递减 d 分（d = 赛事级别 ÷ 参赛队伍/人数，四舍五入）。</div>
         </div>
         <div class="rule-item">
           <div class="rule-label">跨届积分</div>
-          <div class="rule-desc">选手参加某届比赛即获得该届排名对应积分；若缺席最新一届，则在上一届积分基础上扣除 d 分（最低为0）。同一赛事只保留最新一届积分。</div>
+          <div class="rule-desc">选手参加某届比赛即获得该届排名对应积分；若缺席最新一届，则在上一届积分基础上扣除 d/2 分（最低为0，向下取整）。同一赛事只保留最新一届积分。</div>
         </div>
         <div class="rule-item">
           <div class="rule-label">总积分榜</div>
-          <div class="rule-desc">选手在 750 级及以上赛事的当前积分相加，按总积分降序排列。</div>
+          <div class="rule-desc">每个选手取本人积分最高的三个赛事（如国王杯750级、国王杯500级视为不同赛事）的当前积分相加，按总积分降序排列。</div>
         </div>
       </div>
     </div>
@@ -879,26 +879,6 @@ async function loadRankings() {
     const femalePoints = points.filter(p => p.gender === 'female').sort((a, b) => b.total_points - a.total_points);
     let html = renderRankTable(malePoints, '男子');
     html += renderRankTable(femalePoints, '女子');
-    const tournaments = await api('/api/tournaments');
-    const tourData = await Promise.all(tournaments.map(async (t) => {
-      const rounds = await api(`/api/tournaments/${t.id}/rounds`);
-      return { ...t, rounds };
-    }));
-    const sortedTours = tourData.filter(t => t.rounds.length).sort((a, b) =>
-      b.rounds[0].date.localeCompare(a.rounds[0].date)
-    );
-    for (const tour of sortedTours) {
-      for (const round of tour.rounds) {
-        const rd = await api(`/api/rankings/${round.id}`);
-        html += `<div class="card"><h3>${tour.name} - 第${round.edition}届 (${round.date}) | ${round.round_level}级 | d=${rd.d}</h3>
-          <table><thead><tr><th>#</th><th>队伍</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
-        for (const r of rd.rankings) {
-          const name = r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id);
-          html += `<tr><td>${r.rank <= 3 ? ['🥇','🥈','🥉'][r.rank-1] : r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
-        }
-        html += `</tbody></table></div>`;
-      }
-    }
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div>`; }
 }
@@ -929,7 +909,57 @@ async function initQueryPage() {
   const sel = document.getElementById('query-tournament');
   sel.innerHTML = '<option value="">全部赛事</option>' +
     tournaments.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-  document.getElementById('query-results').innerHTML = '<div class="loading">选择赛事和届数点击查询</div>';
+  queryRecentHighLevelRounds();
+}
+
+async function queryRecentHighLevelRounds() {
+  const el = document.getElementById('query-results');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  try {
+    await ensurePlayers();
+    const data = await api('/api/query/rounds');
+    const highLevel = data.filter(r => (r.round_level || 1000) >= 750)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+    const seen = new Set();
+    const latest = [];
+    for (const round of highLevel) {
+      const key = round.tournament_name + '(' + (round.round_level || 1000) + '级)';
+      if (!seen.has(key)) { seen.add(key); latest.push(round); }
+    }
+    if (!latest.length) { el.innerHTML = '<div class="card"><div class="loading">暂无750级以上赛事</div></div>'; return; }
+    let html = '';
+    for (const round of latest) {
+      html += renderRoundCard(round);
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div></div>`; }
+}
+
+function renderRoundCard(round) {
+  const isFree = round.tournament_name === '狗王杯';
+  let h = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
+      <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</h3>`;
+  h += `<h4>排名</h4><table><thead><tr><th>#</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
+  for (const r of round.ranking.rankings) {
+    const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
+    h += `<tr><td>${r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
+  }
+  h += `</tbody></table>`;
+  if (round.matches && round.matches.length) {
+    h += `<button onclick="toggleMatchDetails(${round.id})" style="margin-top:16px;width:100%;padding:8px;background:#e2e8f0;border:none;border-radius:6px;cursor:pointer;font-size:14px">📊 查看比赛详情</button>
+      <div id="match-details-${round.id}" style="display:none;margin-top:12px">
+      <table><thead><tr><th>队伍1</th><th>比分</th><th>队伍2</th></tr></thead><tbody>`;
+    for (const m of round.matches) {
+      const dn = (n, r) => r || n;
+      const t1n = m.t1p2name ? `${dn(m.t1p1name, m.t1p1real)} + ${dn(m.t1p2name, m.t1p2real)}` : dn(m.t1p1name, m.t1p1real);
+      const t2n = m.t2p2name ? `${dn(m.t2p1name, m.t2p1real)} + ${dn(m.t2p2name, m.t2p2real)}` : dn(m.t2p1name, m.t2p1real);
+      h += `<tr><td>${t1n}</td><td><strong>${m.team1_score} : ${m.team2_score}</strong></td><td>${t2n}</td></tr>`;
+    }
+    h += `</tbody></table></div>`;
+  }
+  h += `</div>`;
+  return h;
 }
 
 async function queryRounds() {
@@ -946,40 +976,7 @@ async function queryRounds() {
     const data = await api(`/api/query/rounds?${params.toString()}`);
     if (!data.length) { el.innerHTML = '<div class="card"><div class="loading">未找到匹配的赛事</div></div>'; return; }
 
-    let html = '';
-    for (const round of data) {
-      html += `<div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
-          <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || round.level || 1000}级</h3>`;
-
-      const isFree = round.tournament_name === '狗王杯';
-      html += `<h4>排名</h4><table><thead><tr><th>#</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
-      for (const r of round.ranking.rankings) {
-        const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
-        html += `<tr><td>${r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
-      }
-      html += `</tbody></table>`;
-
-      if (round.matches.length) {
-        html += `<button onclick="toggleMatchDetails(${round.id})" style="margin-top:16px;width:100%;padding:8px;background:#e2e8f0;border:none;border-radius:6px;cursor:pointer;font-size:14px">📊 查看比赛详情</button>
-        <div id="match-details-${round.id}" style="display:none;margin-top:12px">
-          <table><thead><tr><th>队伍1</th><th>比分</th><th>队伍2</th></tr></thead><tbody>`;
-        for (const m of round.matches) {
-          const dn = (n, r) => r || n;
-          const t1n = m.t1p2name ? `${dn(m.t1p1name, m.t1p1real)} + ${dn(m.t1p2name, m.t1p2real)}` : dn(m.t1p1name, m.t1p1real);
-          const t2n = m.t2p2name ? `${dn(m.t2p1name, m.t2p1real)} + ${dn(m.t2p2name, m.t2p2real)}` : dn(m.t2p1name, m.t2p1real);
-          html += `<tr>
-            <td>${t1n}</td>
-            <td><strong>${m.team1_score} : ${m.team2_score}</strong></td>
-            <td>${t2n}</td>
-          </tr>`;
-        }
-        html += `</tbody></table>
-        </div>`;
-      }
-      html += `</div>`;
-    }
-    el.innerHTML = html;
+    el.innerHTML = data.map(round => renderRoundCard(round)).join('');
   } catch (e) { el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">查询失败: ${e.message}</div></div>`; }
 }
 

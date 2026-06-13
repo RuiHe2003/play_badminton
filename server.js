@@ -529,11 +529,8 @@ app.get('/api/points', (req, res) => {
   }
 
   for (const pid in playerPoints) {
-    let total = 0;
-    for (const tname in playerPoints[pid].tournaments) {
-      if (playerPoints[pid].tournaments[tname].level >= 750) total += playerPoints[pid].tournaments[tname].points;
-    }
-    playerPoints[pid].total_points = total;
+    const pts = Object.values(playerPoints[pid].tournaments).map(t => t.points).sort((a, b) => b - a);
+    playerPoints[pid].total_points = pts.slice(0, 3).reduce((s, v) => s + v, 0);
   }
 
   const result = Object.values(playerPoints).sort((a, b) => b.total_points - a.total_points);
