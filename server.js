@@ -385,8 +385,9 @@ app.get('/api/rankings/:roundId', (req, res) => {
   res.json(calculateRoundRankings(parseInt(req.params.roundId), undefined));
 });
 
-// Per-player ranking for free-doubles tournaments (e.g. 狗王杯)
+// Per-player ranking for free-doubles tournaments (e.g. 狗王杯, men's doubles only)
 function calculatePlayerRankings(roundId, level) {
+  const maleIds = new Set(query("SELECT id FROM players WHERE gender = 'male'").map(r => r.id));
   const matches = query(`
     SELECT m.team1_id, m.team2_id, m.team1_score, m.team2_score,
            t1.player1_id as t1p1, t1.player2_id as t1p2,
@@ -403,6 +404,7 @@ function calculatePlayerRankings(roundId, level) {
     const t1players = [[m.t1p1, m.t1p2].filter(Boolean)];
     const t2players = [[m.t2p1, m.t2p2].filter(Boolean)];
     for (const pid of t1players[0]) {
+      if (!maleIds.has(pid)) continue;
       if (!playerStats[pid]) playerStats[pid] = { wins: 0, losses: 0, pf: 0, pa: 0 };
       playerStats[pid].wins += t1w ? 1 : 0;
       playerStats[pid].losses += t1w ? 0 : 1;
@@ -410,6 +412,7 @@ function calculatePlayerRankings(roundId, level) {
       playerStats[pid].pa += m.team2_score;
     }
     for (const pid of t2players[0]) {
+      if (!maleIds.has(pid)) continue;
       if (!playerStats[pid]) playerStats[pid] = { wins: 0, losses: 0, pf: 0, pa: 0 };
       playerStats[pid].wins += t1w ? 0 : 1;
       playerStats[pid].losses += t1w ? 1 : 0;

@@ -648,7 +648,8 @@ async function loadFreeMatchList() {
   });
   h += '</tbody></table>';
 
-  // Per-player rankings
+  // Per-player rankings (men's doubles only)
+  const maleIds = new Set(cachedPlayers.filter(p => p.gender === 'male').map(p => p.id));
   const playerStats = {};
   for (const m of matches) {
     const t1 = teamMap[m.team1_id];
@@ -658,6 +659,7 @@ async function loadFreeMatchList() {
     const t1players = [[t1.p1, t1.p1n], t1.p2 ? [t1.p2, t1.p2n] : null].filter(Boolean);
     const t2players = [[t2.p1, t2.p1n], t2.p2 ? [t2.p2, t2.p2n] : null].filter(Boolean);
     for (const [pid, name] of t1players) {
+      if (!maleIds.has(pid)) continue;
       if (!playerStats[pid]) playerStats[pid] = { name, wins: 0, losses: 0, pf: 0, pa: 0 };
       playerStats[pid].wins += t1w ? 1 : 0;
       playerStats[pid].losses += t1w ? 0 : 1;
@@ -665,6 +667,7 @@ async function loadFreeMatchList() {
       playerStats[pid].pa += m.team2_score;
     }
     for (const [pid, name] of t2players) {
+      if (!maleIds.has(pid)) continue;
       if (!playerStats[pid]) playerStats[pid] = { name, wins: 0, losses: 0, pf: 0, pa: 0 };
       playerStats[pid].wins += t1w ? 0 : 1;
       playerStats[pid].losses += t1w ? 1 : 0;
@@ -821,7 +824,7 @@ async function loadRankings() {
         if (level >= 750) {
           if (has[key]) high.push(key);
         } else {
-          low.push(key);
+          if (has[key]) low.push(key);
         }
       }
       high.sort((a, b) => {
