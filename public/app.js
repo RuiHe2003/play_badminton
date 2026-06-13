@@ -634,11 +634,15 @@ async function loadRankings() {
       if (lowKeys.length && (!lowKey || !lowKeys.includes(lowKey))) {
         lowKey = lowKeys[0];
       }
+      function fmtKey(k) {
+        const m = k.match(/^(.+)\((\d+)级\)$/);
+        return m ? `${m[1]}<br><span style="font-size:11px;color:#718096">🕊${m[2]}</span>` : k;
+      }
       let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
       h += `<table><thead><tr><th>#</th><th>姓名</th>`;
-      for (const key of highKeys) h += `<th>${key}</th>`;
+      for (const key of highKeys) h += `<th>${fmtKey(key)}</th>`;
       if (lowKeys.length) h += `<th onclick="toggleLowDropdown(this)" style="cursor:pointer;user-select:none;position:relative">
-        <span class="low-icon">▶</span> ${lowKey}
+        <span class="low-icon">▶</span> ${fmtKey(lowKey)}
         <div class="low-dd" onclick="event.stopPropagation()" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #e2e8f0;border-radius:4px;padding:4px;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.15);white-space:nowrap">
           <select class="low-sel" onchange="changeLowTournament(this)" style="padding:4px;border-radius:4px">
             ${lowKeys.map(k => `<option value="${k}" ${k === lowKey ? 'selected' : ''}>${k}</option>`).join('')}
