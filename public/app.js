@@ -202,7 +202,7 @@ async function initMatchPage() {
     const isFree = opt && opt.text.startsWith('狗王杯');
     document.getElementById('free-match-card').style.display = isFree ? 'block' : 'none';
     document.getElementById('participant-area').style.display = isFree ? 'none' : '';
-    document.getElementById('round-actions').style.display = isFree ? 'none' : '';
+    document.getElementById('round-actions').style.display = 'none';
     document.getElementById('fixture-card').style.display = isFree ? 'none' : document.getElementById('fixture-card').style.display;
     document.getElementById('live-rank-card').style.display = isFree ? 'none' : document.getElementById('live-rank-card').style.display;
     document.getElementById('existing-round-info').style.display = isFree ? 'none' : document.getElementById('existing-round-info').style.display;
@@ -701,6 +701,22 @@ async function deleteFreeMatch(matchId) {
     await api(`/api/matches/${matchId}`, { method: 'DELETE' });
     loadFreeMatchList();
   } catch (e) { alert('删除失败: ' + e.message); }
+}
+
+async function deleteFreeRound() {
+  if (!MS.roundId) return;
+  if (!confirm('确认删除该轮次及所有比赛？')) return;
+  try {
+    document.getElementById('fm-delete-status').textContent = '⏳ 删除中...';
+    await api(`/api/rounds/${MS.roundId}`, { method: 'DELETE' });
+    MS.roundId = null;
+    document.getElementById('fm-entry-area').style.display = 'none';
+    document.getElementById('fm-create-btn').style.display = 'inline-block';
+    document.getElementById('fm-round-status').textContent = '🗑️ 已删除';
+    document.getElementById('free-match-list').innerHTML = '';
+    document.getElementById('save-edition-btn').style.display = 'none';
+    document.getElementById('fm-delete-status').textContent = '';
+  } catch (e) { document.getElementById('fm-delete-status').textContent = '❌ ' + e.message; }
 }
 
 async function editRoundInfo() {
