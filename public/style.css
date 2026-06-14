@@ -119,8 +119,13 @@ body:has(#tab-home.active) .container { padding: 0; }
 .player-name { font-size: 14px; }
 .player-gender { font-size: 13px; color: #718096; margin-top: 4px; }
 
+.rank-table-wrap { overflow-x: auto; }
+.rank-table { width: 100%; }
+
 @media (max-width: 480px) {
   .player-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .rank-table-wrap { overflow-x: auto; }
+  .rank-table { table-layout: fixed; width: 100%; }
   .player-card { padding: 10px; }
   .player-avatar-img, .player-avatar-placeholder { width: 48px; height: 48px; font-size: 18px; }
   .player-name { font-size: 13px; }

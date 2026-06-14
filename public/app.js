@@ -850,7 +850,7 @@ async function loadRankings() {
         return m ? `${m[1]}<br><span style="font-size:11px;color:#718096">🕊${m[2]}</span>` : k;
       }
       let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
-      h += `<table><thead><tr><th>#</th><th>姓名</th>`;
+      h += `<div class="rank-table-wrap"><table class="rank-table"><thead><tr><th>#</th><th>姓名</th>`;
       for (const key of highKeys) h += `<th>${fmtKey(key)}</th>`;
       if (lowKeys.length) h += `<th onclick="toggleLowDropdown(this)" style="cursor:pointer;user-select:none;position:relative">
         <span class="low-icon">▶</span> ${fmtKey(lowKey)}
@@ -860,7 +860,7 @@ async function loadRankings() {
           </select>
         </div>
       </th>`;
-      h += `<th style="min-width:100px;white-space:nowrap">总积分</th></tr></thead><tbody>`;
+      h += `<th style="white-space:nowrap">总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
         const rc = i === 0 ? 'badge-gold' : i === 1 ? 'badge-silver' : i === 2 ? 'badge-bronze' : '';
         const d = deltas ? deltas[p.player_id] : 0;
@@ -882,7 +882,7 @@ async function loadRankings() {
           <span style="font-size:14px;line-height:1.2">${trendSymbol || '\u25b2'}</span>
         </span></td></tr>`;
       });
-      h += `</tbody></table></div>`;
+      h += `</tbody></table></div></div>`;
       return h;
     }
 
