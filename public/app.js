@@ -812,11 +812,17 @@ async function loadRankings() {
     } else if (!currentLowKey) {
       currentLowKey = null;
     }
+    function isTournamentForGender(type, gender) {
+      if (type === 'singles' || type === 'mens_doubles') return gender === 'male';
+      return true;
+    }
     function getGenderKeys(gender) {
       const has = {};
       for (const p of points) {
         if (p.gender !== gender) continue;
-        for (const k in p.tournaments) has[k] = true;
+        for (const k in p.tournaments) {
+          if (isTournamentForGender(p.tournaments[k].type, gender)) has[k] = true;
+        }
       }
       const high = [];
       const low = [];

@@ -498,12 +498,12 @@ function computePoints(excludeRoundId) {
         if (latestParticipants.has(p.id) && rank) {
           playerPoints[p.id].tournaments[key] = {
             points: acc[p.id].points, edition: latestRound.edition, level: lvl,
-            participated: true, rank: rank.rank, d: acc[p.id].lastD
+            participated: true, rank: rank.rank, d: acc[p.id].lastD, type: tour.type
           };
         } else {
           playerPoints[p.id].tournaments[key] = {
             points: acc[p.id].points, edition: latestRound.edition, level: lvl,
-            participated: false, deducted: true, rank: null, d: acc[p.id].lastD
+            participated: false, deducted: true, rank: null, d: acc[p.id].lastD, type: tour.type
           };
         }
       }
