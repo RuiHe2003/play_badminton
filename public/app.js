@@ -939,7 +939,7 @@ function renderRoundCard(round) {
   const isFree = round.tournament_name === '狗王杯';
   let h = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
-      <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</h3>`;
+      <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</h3></div>`;
   h += `<h4>排名</h4><table><thead><tr><th>#</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
   for (const r of round.ranking.rankings) {
     const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
@@ -1292,7 +1292,7 @@ async function confirmCrop() {
   try {
     await api(`/api/players/${cropPlayerId}/avatar`, { method: 'POST', body: JSON.stringify({ avatar: dataUrl }) });
     closeCropModal();
-    queryPlayer();
+    showPlayerDetail(currentViewedPlayer);
   } catch (err) { alert('上传失败: ' + err.message); }
 }
 
@@ -1308,6 +1308,14 @@ async function uploadAvatar(id, input) {
   input.value = '';
 }
 
+function goToPlayer(name) {
+  document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
+  document.querySelector('[data-tab="player-query"]').classList.add('active');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-player-query').classList.add('active');
+  showPlayerDetail(name);
+}
+
 // ==================== Head to Head ====================
 async function queryHeadToHead() {
   const n1 = document.getElementById('h2h-name1').value.trim();
@@ -1318,8 +1326,11 @@ async function queryHeadToHead() {
   try {
     const data = await api(`/api/headtohead?name1=${encodeURIComponent(n1)}&name2=${encodeURIComponent(n2)}`);
     const h2h = data.head_to_head;
+    const esc = n => n.replace(/'/g, "\\'");
     function avatarHtml(p, size) {
-      return p.avatar ? `<img src="${p.avatar}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 6px">` : `<div style="width:${size}px;height:${size}px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.35)}px;color:#a0aec0;margin:0 auto 6px">${p.name[0]}</div>`;
+      const inner = p.avatar ? `<img src="${p.avatar}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 6px">` : `<div style="width:${size}px;height:${size}px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.35)}px;color:#a0aec0;margin:0 auto 6px;cursor:pointer" onclick="goToPlayer('${esc(p.name)}')">${p.name[0]}</div>`;
+      if (p.avatar) return `<a href="#" onclick="goToPlayer('${esc(p.name)}');return false" style="text-decoration:none;display:block">${inner}</a>`;
+      return inner;
     }
     let html = `<div class="card h2h-summary"><div style="display:flex;justify-content:center;align-items:center;gap:24px">
       <div style="text-align:center">${avatarHtml(data.player1, 64)}<strong style="font-size:20px">${displayName(data.player1)}</strong><br><span class="badge badge-win">${h2h.p1_wins} 胜</span></div>
