@@ -414,7 +414,7 @@ function calculatePlayerRankings(roundId, level) {
 
 // ==================== Points Calculation ====================
 
-app.get('/api/points', (req, res) => {
+function computePoints(excludeRoundId) {
   const tournaments = query('SELECT * FROM tournaments');
   const allPlayers = query('SELECT id, name, gender, real_name FROM players ORDER BY name');
 
@@ -424,10 +424,11 @@ app.get('/api/points', (req, res) => {
   }
 
   for (const tour of tournaments) {
-    const allRounds = query('SELECT * FROM rounds WHERE tournament_id = ? ORDER BY level, date ASC, id ASC', [tour.id]);
+    let allRounds = query('SELECT * FROM rounds WHERE tournament_id = ? ORDER BY level, date ASC, id ASC', [tour.id]);
+    if (!allRounds.length) continue;
+    if (excludeRoundId) allRounds = allRounds.filter(r => r.id !== excludeRoundId);
     if (!allRounds.length) continue;
 
-    // Group rounds by level
     const levelGroups = {};
     for (const round of allRounds) {
       const lvl = round.level;
@@ -516,7 +517,46 @@ app.get('/api/points', (req, res) => {
 
   const result = Object.values(playerPoints).sort((a, b) => b.total_points - a.total_points);
   result.forEach((p, idx) => p.overall_rank = idx + 1);
-  res.json(result);
+  const ranks = {};
+  result.filter(p => p.total_points > 0).forEach((p, idx) => ranks[p.player_id] = idx + 1);
+  return { points: result, ranks };
+}
+
+app.get('/api/points', (req, res) => {
+  const excludeRoundId = req.query.excludeRoundId ? parseInt(req.query.excludeRoundId) : null;
+  const { points } = computePoints(excludeRoundId);
+  res.json(points);
+});
+
+function computeGenderRanks(points) {
+  const male = points.filter(p => p.gender === 'male').sort((a, b) => b.total_points - a.total_points);
+  const female = points.filter(p => p.gender === 'female').sort((a, b) => b.total_points - a.total_points);
+  const ranks = {};
+  male.forEach((p, idx) => ranks[p.player_id] = idx + 1);
+  female.forEach((p, idx) => ranks[p.player_id] = idx + 1);
+  return ranks;
+}
+
+app.get('/api/points/trend', (req, res) => {
+  const allRounds = query('SELECT id, date FROM rounds ORDER BY date DESC, id DESC LIMIT 1');
+  if (!allRounds.length) return res.json({ current: [], deltas: {} });
+  const latestRoundId = allRounds[0].id;
+
+  const current = computePoints();
+  const prev = computePoints(latestRoundId);
+
+  const curGenderRanks = computeGenderRanks(current.points);
+  const prevGenderRanks = computeGenderRanks(prev.points);
+
+  const deltas = {};
+  for (const pid in curGenderRanks) {
+    const curRank = curGenderRanks[pid];
+    const prevRank = prevGenderRanks[pid];
+    if (prevRank !== undefined && prevRank !== curRank) {
+      deltas[pid] = prevRank - curRank;
+    }
+  }
+  res.json({ current: current.points, deltas });
 });
 
 // ==================== Query by Edition ====================

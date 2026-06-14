@@ -774,7 +774,9 @@ async function loadRankings() {
   const el = document.getElementById('rankings-content');
   try {
     await ensurePlayers();
-    const points = await api('/api/points');
+    const trendData = await api('/api/points/trend');
+    const points = trendData.current;
+    const deltas = trendData.deltas || {};
     // Collect all unique tournament keys (e.g. "国王杯(1000级)") from player data
     const allKeys = {};
     for (const p of points) {
@@ -834,7 +836,7 @@ async function loadRankings() {
       });
       return { high, low };
     }
-    function renderRankTable(players, label) {
+    function renderRankTable(players, label, deltas) {
       if (!players.length) return '';
       const gk = getGenderKeys(players[0].gender);
       const highKeys = gk.high;
@@ -858,9 +860,14 @@ async function loadRankings() {
           </select>
         </div>
       </th>`;
-      h += `<th>总积分</th></tr></thead><tbody>`;
+      h += `<th style="min-width:100px;white-space:nowrap">总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
         const rc = i === 0 ? 'badge-gold' : i === 1 ? 'badge-silver' : i === 2 ? 'badge-bronze' : '';
+        const d = deltas ? deltas[p.player_id] : 0;
+        let trendColor = '', trendSymbol = '', trendNum = '';
+        if (d > 0) { trendColor = '#38a169'; trendSymbol = '\u25b2'; trendNum = d; }
+        else if (d < 0) { trendColor = '#e53e3e'; trendSymbol = '\u25bc'; trendNum = -d; }
+        const trendVis = trendColor ? '' : 'visibility:hidden';
         h += `<tr><td><span class="badge ${rc}">${i + 1}</span></td><td><strong>${displayName(p)}</strong></td>`;
         for (const key of highKeys) {
           const t = p.tournaments[key];
@@ -870,15 +877,20 @@ async function loadRankings() {
           const lt = lowKey ? p.tournaments[lowKey] : null;
           h += `<td>${lt ? lt.points : 0}${lt?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
-        h += `<td><strong>${p.total_points}</strong></td></tr>`;
+        h += `<td style="vertical-align:middle;white-space:nowrap"><strong>${p.total_points}</strong> <span style="display:inline-flex;flex-direction:column;align-items:center;line-height:1;color:${trendColor || '#ccc'};${trendVis};vertical-align:middle">
+          <span style="font-size:10px;font-weight:bold;line-height:1.2">${trendNum || '0'}</span>
+          <span style="font-size:14px;line-height:1.2">${trendSymbol || '\u25b2'}</span>
+        </span></td></tr>`;
       });
       h += `</tbody></table></div>`;
       return h;
     }
+
     const malePoints = points.filter(p => p.gender === 'male').sort((a, b) => b.total_points - a.total_points);
     const femalePoints = points.filter(p => p.gender === 'female').sort((a, b) => b.total_points - a.total_points);
-    let html = renderRankTable(malePoints, '男子');
-    html += renderRankTable(femalePoints, '女子');
+
+    let html = renderRankTable(malePoints, '男子', deltas);
+    html += renderRankTable(femalePoints, '女子', deltas);
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div>`; }
 }

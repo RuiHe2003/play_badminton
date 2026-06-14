@@ -1,6 +1,8 @@
 node_modules
-data.db
-server-error.log
-server.log
 npm-debug.log*
 .env
+*.log
+fix_name.js
+fix_names.js
+test_schema.js
+restore.js
