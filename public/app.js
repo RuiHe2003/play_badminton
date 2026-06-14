@@ -813,7 +813,7 @@ async function loadRankings() {
       currentLowKey = null;
     }
     function isTournamentForGender(type, gender) {
-      if (type === 'singles' || type === 'mens_doubles') return gender === 'male';
+      if (type === 'singles') return gender === 'male';
       return true;
     }
     function getGenderKeys(gender) {
