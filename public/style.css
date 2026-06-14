@@ -110,7 +110,20 @@ body:has(#tab-home.active) .container { padding: 0; }
   .h2h-summary .big-score { font-size: 36px; }
 }
 
+.player-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.player-card { cursor: pointer; padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; text-align: center; transition: box-shadow .2s; }
+.player-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.player-avatar-wrap { font-size: 32px; margin-bottom: 8px; }
+.player-avatar-img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
+.player-avatar-placeholder { width: 64px; height: 64px; border-radius: 50%; background: #e2e8f0; display: inline-flex; align-items: center; justify-content: center; font-size: 24px; color: #a0aec0; }
+.player-name { font-size: 14px; }
+.player-gender { font-size: 13px; color: #718096; margin-top: 4px; }
+
 @media (max-width: 480px) {
+  .player-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .player-card { padding: 10px; }
+  .player-avatar-img, .player-avatar-placeholder { width: 48px; height: 48px; font-size: 18px; }
+  .player-name { font-size: 13px; }
   .container { padding: 8px; }
   .card { padding: 10px; }
   h2 { font-size: 18px; margin-bottom: 12px; }

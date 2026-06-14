@@ -1026,14 +1026,14 @@ async function loadPlayerQueryList() {
   document.getElementById('query-player-name').value = '';
   try {
     const players = await api('/api/players');
-    let html = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">`;
+    let html = `<div class="player-grid">`;
     for (const p of players) {
       const dn = displayName(p);
       const extra = dn !== p.name ? ` <small style="color:#718096;font-size:12px">(${p.name})</small>` : '';
-      html += `<div class="player-card" onclick="showPlayerDetail('${p.name.replace(/'/g, "\\'")}')" style="cursor:pointer;padding:16px;border:1px solid #e2e8f0;border-radius:8px;text-align:center;transition:box-shadow .2s" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.12)'" onmouseout="this.style.boxShadow='none'">
-        <div style="font-size:32px;margin-bottom:8px">${p.avatar ? `<img src="${p.avatar}" style="width:64px;height:64px;border-radius:50%;object-fit:cover">` : `<div style="width:64px;height:64px;border-radius:50%;background:#e2e8f0;display:inline-flex;align-items:center;justify-content:center;font-size:24px;color:#a0aec0">${p.name[0]}</div>`}</div>
-        <div><strong>${dn}</strong>${extra}</div>
-        <div style="font-size:13px;color:#718096;margin-top:4px">${p.gender === 'male' ? '男' : '女'}</div>
+      html += `<div class="player-card" onclick="showPlayerDetail('${p.name.replace(/'/g, "\\'")}')">
+        <div class="player-avatar-wrap">${p.avatar ? `<img src="${p.avatar}" class="player-avatar-img">` : `<div class="player-avatar-placeholder">${p.name[0]}</div>`}</div>
+        <div class="player-name"><strong>${dn}</strong>${extra}</div>
+        <div class="player-gender">${p.gender === 'male' ? '男' : '女'}</div>
       </div>`;
     }
     html += `</div>`;
