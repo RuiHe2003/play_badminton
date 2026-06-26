@@ -345,10 +345,24 @@ function calculateRoundRankings(roundId, level) {
     else { stats[m.team2_id].wins++; stats[m.team1_id].losses++; }
   }
 
+  const h2h = {};
+  for (const m of matches) {
+    if (m.team1_score > m.team2_score) {
+      h2h[`${m.team1_id}-${m.team2_id}`] = m.team1_id;
+    } else {
+      h2h[`${m.team1_id}-${m.team2_id}`] = m.team2_id;
+    }
+  }
+
   let rankings = Object.values(stats);
   rankings.sort((a, b) => {
     if (b.wins !== a.wins) return b.wins - a.wins;
-    return (b.points_for - b.points_against) - (a.points_for - a.points_against);
+    const netDiff = (b.points_for - b.points_against) - (a.points_for - a.points_against);
+    if (netDiff !== 0) return netDiff;
+    const winner = h2h[`${a.team_id}-${b.team_id}`] || h2h[`${b.team_id}-${a.team_id}`];
+    if (winner === a.team_id) return -1;
+    if (winner === b.team_id) return 1;
+    return 0;
   });
 
   const n = rankings.length;
