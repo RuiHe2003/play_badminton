@@ -94,7 +94,7 @@ app.delete('/api/players/:id', (req, res) => {
 // ==================== Tournaments ====================
 
 app.get('/api/tournaments', (req, res) => {
-  res.json(query('SELECT id, name, type, level FROM tournaments'));
+  res.json(query('SELECT id, name, type, level, icon FROM tournaments'));
 });
 
 app.post('/api/tournaments', (req, res) => {
@@ -109,6 +109,17 @@ app.post('/api/tournaments', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: '该赛事已存在' });
   }
+});
+
+// 赛事图标：icon 传空字符串表示删除图标
+app.post('/api/tournaments/:id/icon', (req, res) => {
+  const id = parseInt(req.params.id);
+  const t = query('SELECT * FROM tournaments WHERE id = ?', [id])[0];
+  if (!t) return res.status(404).json({ error: '赛事不存在' });
+  const { icon } = req.body;
+  if (icon === undefined) return res.status(400).json({ error: '缺少图标数据' });
+  query('UPDATE tournaments SET icon = ? WHERE id = ?', [icon, id]);
+  res.json({ success: true, icon });
 });
 
 // ==================== Rounds ====================
@@ -345,35 +356,40 @@ function calculateRoundRankings(roundId, level) {
     else { stats[m.team2_id].wins++; stats[m.team1_id].losses++; }
   }
 
-  const h2h = {};
-  for (const m of matches) {
-    if (m.team1_score > m.team2_score) {
-      h2h[`${m.team1_id}-${m.team2_id}`] = m.team1_id;
-    } else {
-      h2h[`${m.team1_id}-${m.team2_id}`] = m.team2_id;
-    }
-  }
-
   let rankings = Object.values(stats);
   rankings.sort((a, b) => {
     if (b.wins !== a.wins) return b.wins - a.wins;
-    const netDiff = (b.points_for - b.points_against) - (a.points_for - a.points_against);
-    if (netDiff !== 0) return netDiff;
-    const winner = h2h[`${a.team_id}-${b.team_id}`] || h2h[`${b.team_id}-${a.team_id}`];
-    if (winner === a.team_id) return -1;
-    if (winner === b.team_id) return 1;
-    return 0;
+    return (b.points_for - b.points_against) - (a.points_for - a.points_against);
   });
 
   const n = rankings.length;
   const d = Math.round(level / n);
-  rankings = rankings.map((r, idx) => ({
-    ...r, rank: idx + 1,
-    net_points: r.points_for - r.points_against,
-    points_earned: level - d * idx
-  }));
 
-  return { rankings, d, teamCount: n };
+  // 并列处理：胜场与净胜分完全相同的队伍并列同名次，积分取所跨名次的平均值
+  const tied = [];
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j + 1 < n
+      && rankings[j + 1].wins === rankings[i].wins
+      && (rankings[j + 1].points_for - rankings[j + 1].points_against) === (rankings[i].points_for - rankings[i].points_against)) {
+      j++;
+    }
+    // 名次 i+1 .. j+1 并列，积分取平均
+    let sum = 0;
+    for (let k = i; k <= j; k++) sum += level - d * k;
+    const avg = Math.round(sum / (j - i + 1));
+    for (let k = i; k <= j; k++) {
+      tied.push({
+        ...rankings[k], rank: i + 1,
+        net_points: rankings[k].points_for - rankings[k].points_against,
+        points_earned: avg
+      });
+    }
+    i = j + 1;
+  }
+
+  return { rankings: tied, d, teamCount: n };
 }
 
 app.get('/api/rankings/:roundId', (req, res) => {
@@ -421,9 +437,27 @@ function calculatePlayerRankings(roundId, level) {
 
   const n = rankings.length;
   const d = n ? Math.round(level / n) : 0;
-  rankings = rankings.map((r, idx) => ({ ...r, rank: idx + 1, net_points: r.pf - r.pa, points_earned: Math.max(0, level - d * idx) }));
 
-  return { rankings, d };
+  // 并列处理：胜场与净胜分完全相同的选手并列同名次，积分取所跨名次的平均值
+  const tied = [];
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j + 1 < n
+      && rankings[j + 1].wins === rankings[i].wins
+      && (rankings[j + 1].pf - rankings[j + 1].pa) === (rankings[i].pf - rankings[i].pa)) {
+      j++;
+    }
+    let sum = 0;
+    for (let k = i; k <= j; k++) sum += Math.max(0, level - d * k);
+    const avg = Math.round(sum / (j - i + 1));
+    for (let k = i; k <= j; k++) {
+      tied.push({ ...rankings[k], rank: i + 1, net_points: rankings[k].pf - rankings[k].pa, points_earned: avg });
+    }
+    i = j + 1;
+  }
+
+  return { rankings: tied, d };
 }
 
 // ==================== Points Calculation ====================
@@ -526,7 +560,9 @@ function computePoints(excludeRoundId) {
 
   for (const pid in playerPoints) {
     const pts = Object.values(playerPoints[pid].tournaments).map(t => t.points).sort((a, b) => b - a);
-    playerPoints[pid].total_points = pts.slice(0, 3).reduce((s, v) => s + v, 0);
+    // 男生取积分最高的4个赛事，女生取3个
+    const topN = playerPoints[pid].gender === 'male' ? 4 : 3;
+    playerPoints[pid].total_points = pts.slice(0, topN).reduce((s, v) => s + v, 0);
   }
 
   const result = Object.values(playerPoints).sort((a, b) => b.total_points - a.total_points);

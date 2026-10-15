@@ -107,6 +107,15 @@ body:has(#tab-home.active) .container { padding: 0; }
   #admin-subnav { padding: 0 8px; overflow-x: auto; }
   #admin-subnav a { padding: 8px 10px; font-size: 13px; }
   .nav-links a { padding: 12px 10px; font-size: 15px; }
+  .query-tour-icon { width: 48px; height: 48px; }
+  .query-tour-icon-ph { line-height: 48px; font-size: 22px; }
+  .round-tour-icon { width: 36px; height: 36px; }
+  .round-tour-icon-ph { line-height: 36px; font-size: 16px; }
+  /* 中小屏（平板）一行三个，图标相应缩小；≤480px 的手机端由下方规则覆盖为一行两个 */
+  .tour-grid { grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .tour-tile { padding: 14px 8px; gap: 8px; }
+  .tour-tile img, .tile-icon-ph { width: 84px; height: 84px; line-height: 84px; font-size: 38px; }
+  .tile-name { font-size: 15px; }
   .h2h-summary .big-score { font-size: 36px; }
 }
 
@@ -122,10 +131,89 @@ body:has(#tab-home.active) .container { padding: 0; }
 .rank-table-wrap { overflow-x: auto; }
 .rank-table { width: 100%; }
 
+/* 排名表头「姓名」「总积分」放大一档；姓名两字中间空 1em，使其与赛事名同为 3 字宽，视觉对齐 */
+.rank-table th.th-key { font-size: 1.15em; }
+.th-gap { display: inline-block; width: 1em; }
+
+/* 表头第一列：男生/女生排名的剪影（抠图后的透明 PNG，替代原来的 # 号）
+   用绝对定位撑满单元格高度（top/bottom 贴边），左右居中，与下方名次徽章同一列中心 */
+.rank-table th.th-hero-cell { position: relative; padding: 0 6px; vertical-align: middle; min-width: 4.4em; }
+.rank-table td.hero-col { text-align: center; }
+.th-hero {
+  position: absolute; top: 2px; bottom: 2px; left: 50%; transform: translateX(-50%);
+  width: 4.4em; background-repeat: no-repeat; background-position: center center;
+  background-size: contain; background-origin: content-box;
+}
+
+/* 总积分排名：姓名前的小头像 */
+.rank-avatar { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 6px; display: inline-block; }
+.rank-avatar-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 26px; font-size: 12px; }
+
+/* 总积分排名表头：赛事图标显示在赛事名称上方
+   赛事名都是 3 个汉字，中文字符宽 ≈ 字号，故用 3em 让图标与名称同宽，并随 th 字号自动缩放
+   （桌面 42px / 768px 36px / ≤480px 33px）
+   注意：th 与 td 必须一起居中，否则表头与下方分数对不齐 */
+.rank-table th.tour-th,
+.rank-table td.tour-td { text-align: center; }
+/* 总积分列：图标显示在「总积分」文字上方，表头与数据格一起居中（同赛事列的对齐原则） */
+.rank-table th.total-th,
+.rank-table td.total-td { text-align: center; }
+/* 三行结构：图标 / 名称 / 🕊级别。行距统一由 margin 控制，随字号缩放
+   图标下方额外留出「级别行的半行距」，使两处行间距相等（实测差值 <0.5px） */
+/* 赛事查询页下方「最新赛事」卡片：标题最左侧显示赛事图标（原 📋 已替换） */
+.round-card-title { display: flex; align-items: center; gap: 10px; }
+.round-tour-icon { width: 42px; height: 42px; border-radius: 6px; object-fit: cover; flex: none; }
+.round-tour-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 42px; font-size: 18px; }
+
+/* 总积分榜：默认只显示前 10 名，下方折叠提示条（点击展开/收起完整榜单） */
+.rank-more { margin-top: 12px; padding: 11px 12px; text-align: center; font-size: 14px; color: #4a5568;
+  background: #f7fafc; border: 1px dashed #cbd5e0; border-radius: 8px; cursor: pointer; user-select: none; transition: all .15s; }
+.rank-more:hover { border-color: #48bb78; color: #276749; background: #f0fff4; }
+
+/* 赛事查询页：赛事图标按钮网格（点击才加载该赛事最新赛况） */
+/* 电脑端：一行四个，图标放大到 110px */
+.tour-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+.tour-tile { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 10px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; cursor: pointer; transition: all .15s; }
+.tour-tile:hover { border-color: #48bb78; box-shadow: 0 4px 14px rgba(0, 0, 0, .1); transform: translateY(-2px); }
+.tour-tile.active { border-color: #48bb78; background: #f0fff4; }
+.tour-tile img { width: 110px; height: 110px; border-radius: 14px; object-fit: cover; display: block; }
+.tile-icon-ph { width: 110px; height: 110px; border-radius: 14px; background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 110px; font-size: 48px; }
+.tile-name { font-size: 16px; font-weight: 600; color: #2d3748; text-align: center; line-height: 1.3; }
+
+/* 赛事查询页左上角：当前选中赛事的图标，尺寸与积分排名页赛事图标同为 3em 档（42/36/33px） */
+.query-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+/* margin 会参与 flex 居中计算，h2 自带 margin-bottom 会让文字偏上，故清零、改由外层统一留白 */
+.query-head h2 { margin-bottom: 0; }
+.query-tour-icon-slot { flex: none; line-height: 0; }
+.query-tour-icon { width: 58px; height: 58px; border-radius: 8px; object-fit: cover; display: block; }
+.query-tour-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 58px; font-size: 26px; }
+
+.tour-icon { width: 3em; height: 3em; border-radius: 6px; object-fit: cover; display: block; margin: 0 auto 0.4em; }
+/* 总积分图标：宽幅线稿（约 1.85:1），保持完整不裁剪，高度按比例自适应 */
+.tour-icon.tour-icon-wide { height: auto; object-fit: contain; border-radius: 4px; }
+.tour-name, .tour-lvl { display: block; line-height: 1.25; }
+.tour-name { margin-bottom: 0.43em; }
+.tour-lvl { font-size: 11px; color: #718096; }
+
 @media (max-width: 480px) {
   .player-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .rank-table-wrap { overflow-x: auto; }
-  .rank-table { table-layout: fixed; width: 100%; }
+  /* 关键修复：fixed 布局会把列宽压扁，nowrap 文字直接溢出压到相邻列（姓名与积分重叠）。
+     改回 auto 布局并按内容撑开宽度，交给容器横向滚动。 */
+  .rank-table { table-layout: auto; width: max-content; min-width: 100%; }
+  /* 横向滚动时姓名列固定在左侧，背景实色避免透出下方内容 */
+  .rank-table th:nth-child(2),
+  .rank-table td:nth-child(2) {
+    position: sticky;
+    left: 0;
+    background: #fff;
+    z-index: 1;
+  }
+  .rank-table thead th:nth-child(2) { background: #f7fafc; }
+  /* 小屏头像缩小一档 */
+  .rank-avatar { width: 22px; height: 22px; }
+  .rank-avatar-ph { line-height: 22px; font-size: 11px; }
   .player-card { padding: 10px; }
   .player-avatar-img, .player-avatar-placeholder { width: 48px; height: 48px; font-size: 18px; }
   .player-name { font-size: 13px; }
@@ -140,6 +228,18 @@ body:has(#tab-home.active) .container { padding: 0; }
   .match-entry { padding: 8px; gap: 6px; }
   .match-entry input[type="number"] { width: 45px; font-size: 14px; padding: 4px 6px; }
   .match-entry .team-label { min-width: 80px; font-size: 13px; }
+  .query-tour-icon { width: 42px; height: 42px; border-radius: 6px; }
+  .query-tour-icon-ph { line-height: 42px; font-size: 19px; }
+  .query-head { margin-bottom: 12px; }
+  /* 手机屏一行两个赛事，图标放大便于点击 */
+  .tour-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .tour-tile img, .tile-icon-ph { width: 68px; height: 68px; line-height: 68px; font-size: 30px; }
+  .tour-tile { padding: 12px 4px; }
+  .tile-name { font-size: 13px; }
+  .rank-more { font-size: 13px; padding: 10px 8px; }
+  .round-tour-icon { width: 33px; height: 33px; border-radius: 5px; }
+  .round-tour-icon-ph { line-height: 33px; font-size: 15px; }
+  .round-card-title { gap: 8px; }
   .player-stat-card .stat-value { font-size: 22px; }
   .player-stat-card .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .points-table th, .points-table td { font-size: 10px; padding: 3px 2px; }

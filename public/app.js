@@ -1,6 +1,9 @@
 // ==================== Navigation ====================
 let currentAdminSub = 'players';
 function displayName(p) { return p.real_name || p.name; }
+function htmlEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 document.querySelectorAll('[data-tab]').forEach(link => {
   link.addEventListener('click', e => {
@@ -80,6 +83,14 @@ async function ensurePlayers() {
 }
 function pn(id) { return nameCache[id] || '未知'; }
 
+// 总积分排名表格里姓名前的小头像：有录入头像则显示圆形缩略图，否则用名字首字符占位
+function rankAvatarHtml(p, avatarMap) {
+  const src = avatarMap && avatarMap[p.player_id];
+  if (src) return `<img src="${src}" class="rank-avatar" alt="">`;
+  const initial = htmlEsc((p.name || '?')[0]);
+  return `<span class="rank-avatar rank-avatar-ph">${initial}</span>`;
+}
+
 // ==================== Home ====================
 async function loadHome() {
   const el = document.getElementById('home-content');
@@ -110,7 +121,7 @@ async function loadHome() {
         </div>
         <div class="rule-item">
           <div class="rule-label">总积分榜</div>
-          <div class="rule-desc">每个选手取本人积分最高的三个赛事（如国王杯750级、国王杯500级视为不同赛事）的当前积分相加，按总积分降序排列。</div>
+          <div class="rule-desc">每个选手取本人积分最高的四（男）/三（女）个赛事（如国王杯750级、国王杯500级视为不同赛事）的当前积分相加，按总积分降序排列。</div>
         </div>
       </div>
     </div>
@@ -185,13 +196,14 @@ async function initMatchPage() {
   document.getElementById('participant-list').innerHTML = '<div class="loading">暂无参赛者，请添加</div>';
 
   const tournaments = await api('/api/tournaments');
+  cachedTournaments = tournaments;
   const sel = document.getElementById('round-tournament');
   sel.innerHTML = tournaments.map(t =>
     `<option value="${t.id}" data-type="${t.type}" data-level="${t.level}">${t.name} (${t.type === 'singles' ? '男单' : t.type === 'mixed_doubles' ? '混双' : '男双'})</option>`
   ).join('');
   const levelSel = document.getElementById('round-level');
   if (levelSel) levelSel.onchange = () => { MS.level = parseInt(levelSel.value); };
-  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); setDefaultLevel(); toggleFreeMatchUI(); };
+  sel.onchange = () => { updateEditionSelect(); refreshParticipantSelect(); setDefaultLevel(); toggleFreeMatchUI(); renderTournamentIcon(); };
   function setDefaultLevel() {
     const opt = sel.options[sel.selectedIndex];
     if (levelSel && opt) { levelSel.value = opt.dataset.level || '1000'; MS.level = parseInt(levelSel.value); }
@@ -213,6 +225,99 @@ async function initMatchPage() {
   await updateEditionSelect();
   await refreshParticipantSelect();
   toggleFreeMatchUI();
+  renderTournamentIcon();
+}
+
+// ==================== Tournament Icon ====================
+let cachedTournaments = [];
+
+// 压缩成正方形 128x128 的 JPEG，避免 base64 直接入库把 data.db 撑大
+function compressIcon(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = function () {
+      const SIZE = 128;
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const ctx = canvas.getContext('2d');
+      // 先铺白底，透明 PNG 转 JPEG 才不会变黑
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, SIZE, SIZE);
+      const side = Math.min(img.width, img.height);
+      ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, SIZE, SIZE);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+async function uploadTournamentIcon(input) {
+  const status = document.getElementById('t-icon-status');
+  const tid = document.getElementById('round-tournament').value;
+  if (!tid) { input.value = ''; alert('请先选择赛事'); return; }
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 5 * 1024 * 1024) { input.value = ''; alert('图片不能超过5MB'); return; }
+  status.style.color = '#718096';
+  status.textContent = '上传中...';
+  try {
+    const dataUrl = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = e => res(e.target.result);
+      reader.onerror = rej;
+      reader.readAsDataURL(file);
+    });
+    const icon = await compressIcon(dataUrl);
+    await api(`/api/tournaments/${tid}/icon`, { method: 'POST', body: JSON.stringify({ icon }) });
+    const t = cachedTournaments.find(x => String(x.id) === String(tid));
+    if (t) t.icon = icon;
+    status.style.color = '#38a169';
+    status.textContent = '✓ 已保存 (' + Math.round(icon.length / 1024) + 'KB)';
+    renderTournamentIcon();
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (e) {
+    status.style.color = '#e53e3e';
+    status.textContent = '上传失败: ' + e.message;
+  }
+  input.value = '';
+}
+
+async function removeTournamentIcon() {
+  const tid = document.getElementById('round-tournament').value;
+  if (!tid) return;
+  if (!confirm('确定移除该赛事的图标吗？')) return;
+  try {
+    await api(`/api/tournaments/${tid}/icon`, { method: 'POST', body: JSON.stringify({ icon: '' }) });
+    const t = cachedTournaments.find(x => String(x.id) === String(tid));
+    if (t) t.icon = '';
+    renderTournamentIcon();
+  } catch (e) { alert('移除失败: ' + e.message); }
+}
+
+function renderTournamentIcon() {
+  const sel = document.getElementById('round-tournament');
+  const preview = document.getElementById('t-icon-preview');
+  const hint = document.getElementById('t-icon-hint');
+  const delBtn = document.getElementById('t-icon-del-btn');
+  if (!sel || !preview) return;
+  const t = cachedTournaments.find(x => String(x.id) === String(sel.value));
+  if (!t) {
+    preview.innerHTML = '🏸';
+    hint.textContent = '请先选择赛事';
+    delBtn.style.display = 'none';
+    return;
+  }
+  if (t.icon) {
+    preview.innerHTML = `<img src="${t.icon}" style="width:100%;height:100%;object-fit:cover;display:block">`;
+    hint.textContent = `${t.name} · 点击图标可更换`;
+    delBtn.style.display = '';
+  } else {
+    preview.innerHTML = htmlEsc((t.name || '?')[0]);
+    hint.textContent = `${t.name} · 暂无图标，点击上传`;
+    delBtn.style.display = 'none';
+  }
 }
 
 async function updateEditionSelect() {
@@ -769,11 +874,37 @@ function updateLive() {
 
 // ==================== Rankings ====================
 let currentLowKey = null;
+// 750 级合并列：所有 750 级赛事共用一个下拉列，默认显示"日期最新"举办的一届
+// 例外：女生榜中国王杯(750级)单独成列，不并入合并列
+const MERGED750_EXCLUDE_FEMALE = ['国王杯'];
+// 男女榜的合并列选项不同，故选中项与"是否手动选过"都按性别分别记录
+let currentHigh750Key = { male: null, female: null };
+// 用户是否手动切换过下拉：没手动选过就永远默认显示"日期最新"的一届
+let high750UserPicked = { male: false, female: false };
+let lowUserPicked = false;
+// 总积分榜默认只显示前 10 名，点下方提示条展开完整榜单；男女榜各自记住展开状态
+const RANK_LIMIT = 10;
+let rankExpanded = { male: false, female: false };
+function isMerged750Key(key, gender) {
+  const m = key.match(/^(.+)\((\d+)级\)$/);
+  // 只要等级是 750 就归入合并列，新增 750 级赛事无需再改代码
+  if (!m || parseInt(m[2]) !== 750) return false;
+  if (gender === 'female' && MERGED750_EXCLUDE_FEMALE.includes(m[1])) return false;
+  return true;
+}
+function sortKeysByLevelDesc(a, b) {
+  const la = parseInt(a.match(/\((\d+)级\)$/)?.[1] || 1000);
+  const lb = parseInt(b.match(/\((\d+)级\)$/)?.[1] || 1000);
+  return la !== lb ? lb - la : a.localeCompare(b);
+}
 
 async function loadRankings() {
   const el = document.getElementById('rankings-content');
   try {
     await ensurePlayers();
+    // 头像映射（来自选手库已录入的头像）
+    const avatarMap = {};
+    for (const p of cachedPlayers) if (p.avatar) avatarMap[p.id] = p.avatar;
     const trendData = await api('/api/points/trend');
     const points = trendData.current;
     const deltas = trendData.deltas || {};
@@ -790,27 +921,53 @@ async function loadRankings() {
       const level = m ? parseInt(m[1]) : 1000;
       if (level < 750) allLowKeys.push(key);
     }
-    // Determine default low tournament (most recent by date)
-    if (!currentLowKey && allLowKeys.length) {
+    // 计算每个 key 最近一届的日期（合并列默认选中"日期最新"的一届）；顺带建立 赛事名→图标 映射
+    const allMerged750Keys = {
+      male: sortedAll.filter(k => isMerged750Key(k, 'male')),
+      female: sortedAll.filter(k => isMerged750Key(k, 'female')),
+    };
+    const keyLatestDate = {};
+    const iconMap = {};
+    {
       const tournaments = await api('/api/tournaments');
       const tourData = await Promise.all(tournaments.map(async (t) => {
         const rounds = await api(`/api/tournaments/${t.id}/rounds`);
         return { ...t, rounds };
       }));
-      let mostRecent = null;
       for (const tour of tourData) {
+        if (tour.icon) iconMap[tour.name] = tour.icon;
         for (const round of tour.rounds) {
           const key = `${tour.name}(${round.round_level}级)`;
-          if (allLowKeys.includes(key)) {
-            if (!mostRecent || round.date > mostRecent.date) {
-              mostRecent = { key, date: round.date };
-            }
-          }
+          if (!keyLatestDate[key] || round.date > keyLatestDate[key]) keyLatestDate[key] = round.date;
         }
       }
-      currentLowKey = mostRecent ? mostRecent.key : allLowKeys[0];
-    } else if (!currentLowKey) {
-      currentLowKey = null;
+    }
+    // 取 keys 中"最近一届日期"最新者；拿不到日期则退回级别高、再按名称排序
+    function latestOf(keys) {
+      let best = null;
+      for (const key of keys) {
+        const d = keyLatestDate[key];
+        if (d && (!best || d > best.date)) best = { key, date: d };
+      }
+      if (best) return best.key;
+      return [...keys].sort(sortKeysByLevelDesc)[0] || null;
+    }
+    // 下拉选项按"最近一届日期"倒序，最新排最前
+    function byDateDesc(keys) {
+      return [...keys].sort((a, b) => {
+        const da = keyLatestDate[a] || '', db = keyLatestDate[b] || '';
+        if (da !== db) return db.localeCompare(da);
+        return sortKeysByLevelDesc(a, b);
+      });
+    }
+    if (!lowUserPicked || !currentLowKey || !allLowKeys.includes(currentLowKey)) {
+      currentLowKey = allLowKeys.length ? latestOf(allLowKeys) : null;
+    }
+    for (const g of ['male', 'female']) {
+      const keys = allMerged750Keys[g];
+      if (!high750UserPicked[g] || !currentHigh750Key[g] || !keys.includes(currentHigh750Key[g])) {
+        currentHigh750Key[g] = keys.length ? latestOf(keys) : null;
+      }
     }
     function isTournamentForGender(type, gender) {
       if (type === 'singles') return gender === 'male';
@@ -825,70 +982,120 @@ async function loadRankings() {
         }
       }
       const high = [];
+      const merged = [];
       const low = [];
       for (const key of sortedAll) {
         const m = key.match(/\((\d+)级\)$/);
         const level = m ? parseInt(m[1]) : 1000;
         if (level >= 750) {
-          if (has[key]) high.push(key);
+          if (has[key]) (isMerged750Key(key, gender) ? merged : high).push(key);
         } else {
           if (has[key]) low.push(key);
         }
       }
-      high.sort((a, b) => {
-        const la = parseInt(a.match(/\((\d+)级\)$/)?.[1] || 1000);
-        const lb = parseInt(b.match(/\((\d+)级\)$/)?.[1] || 1000);
-        return la !== lb ? lb - la : a.localeCompare(b);
-      });
-      return { high, low };
+      high.sort(sortKeysByLevelDesc);
+      merged.sort(sortKeysByLevelDesc);
+      return { high, merged, low };
     }
     function renderRankTable(players, label, deltas) {
       if (!players.length) return '';
-      const gk = getGenderKeys(players[0].gender);
+      const gender = players[0].gender;
+      const gk = getGenderKeys(gender);
       const highKeys = gk.high;
+      const mergedKeys = gk.merged;
       const lowKeys = gk.low;
       let lowKey = currentLowKey;
       if (lowKeys.length && (!lowKey || !lowKeys.includes(lowKey))) {
-        lowKey = lowKeys[0];
+        lowKey = latestOf(lowKeys);
+      }
+      let mKey = currentHigh750Key[gender];
+      if (mergedKeys.length && (!mKey || !mergedKeys.includes(mKey))) {
+        mKey = latestOf(mergedKeys);
+      }
+      // 表头：赛事图标（24px 圆角）显示在赛事名称上方，未设置图标的赛事保持原样
+      // 图标单独占一行（block），与名称/级别行分离，避免把下拉箭头挤成孤行
+      function tourIconHtml(name) {
+        return `<img class="tour-icon" src="${iconMap[name]}" alt="" title="${htmlEsc(name)}">`;
+      }
+      // 三行（图标 / 名称 / 🕊级别）拆成独立块级元素，行距由 CSS margin 统一控制，
+      // 避免依赖 <br> 的行盒堆叠（那样各断点间距会不一致）。arrowHtml 拼在级别行开头。
+      function tourLabel(k, arrowHtml = '') {
+        const m = k.match(/^(.+)\((\d+)级\)$/);
+        return m
+          ? `<span class="tour-name">${m[1]}</span><span class="tour-lvl">${arrowHtml}🕊${m[2]}</span>`
+          : `<span class="tour-name">${arrowHtml}${k}</span>`;
+      }
+      function tourNameOf(k) {
+        const m = k.match(/^(.+)\((\d+)级\)$/);
+        return m ? m[1] : k;
       }
       function fmtKey(k) {
-        const m = k.match(/^(.+)\((\d+)级\)$/);
-        return m ? `${m[1]}<br><span style="font-size:11px;color:#718096">🕊${m[2]}</span>` : k;
+        const name = tourNameOf(k);
+        return iconMap[name] ? tourIconHtml(name) + tourLabel(k) : tourLabel(k);
       }
-      let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
-      h += `<div class="rank-table-wrap"><table class="rank-table"><thead><tr><th>#</th><th>姓名</th>`;
-      for (const key of highKeys) h += `<th>${fmtKey(key)}</th>`;
-      if (lowKeys.length) h += `<th onclick="toggleLowDropdown(this)" style="cursor:pointer;user-select:none;position:relative">
-        <span class="low-icon">▶</span> ${fmtKey(lowKey)}
+      // 列布局：先按级别降序输出独立高列（女生榜的国王杯750在此列队），再输出 750 合并列
+      const columns = highKeys.map(key => ({ merged: false, key }));
+      if (mergedKeys.length) columns.push({ merged: true, keys: mergedKeys });
+      // 下拉选项：日期最新的排最前
+      const mergedOpts = byDateDesc(mergedKeys);
+      const lowOpts = byDateDesc(lowKeys);
+      function dropdownTh(keys, selected, kind) {
+        const icon = kind === 'low' ? 'low-icon' : 'high-icon';
+        const toggle = kind === 'low' ? 'toggleLowDropdown' : 'toggleHighDropdown';
+        const change = kind === 'low' ? 'changeLowTournament' : 'changeHighTournament';
+        const tip = keyLatestDate[selected] ? `最近一届 ${keyLatestDate[selected]}` : '';
+        const nm = tourNameOf(selected);
+        const iconPart = iconMap[nm] ? tourIconHtml(nm) : '';
+        return `<th class="tour-th" onclick="${toggle}(this)" title="${tip}" style="cursor:pointer;user-select:none;position:relative">
+        ${iconPart}${tourLabel(selected, `<span class="${icon}">▶</span> `)}
         <div class="low-dd" onclick="event.stopPropagation()" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #e2e8f0;border-radius:4px;padding:4px;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.15);white-space:nowrap">
-          <select class="low-sel" onchange="changeLowTournament(this)" style="padding:4px;border-radius:4px">
-            ${lowKeys.map(k => `<option value="${k}" ${k === lowKey ? 'selected' : ''}>${k}</option>`).join('')}
+          <select class="low-sel" onchange="${change}(this)" style="padding:4px;border-radius:4px">
+            ${keys.map(k => `<option value="${k}" ${k === selected ? 'selected' : ''}>${k}${keyLatestDate[k] ? ' · ' + keyLatestDate[k] : ''}</option>`).join('')}
           </select>
         </div>
       </th>`;
-      h += `<th style="white-space:nowrap">总积分</th></tr></thead><tbody>`;
+      }
+      let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
+      h += `<div class="rank-table-wrap"><table class="rank-table" data-gender="${gender}"><thead><tr><th class="th-hero-cell"><span class="th-hero" style="background-image:url('${gender === 'male' ? '/syq.png' : '/ztqy.png'}')"></span></th><th class="th-key">姓<span class="th-gap"></span>名</th>`;
+      for (const col of columns) {
+        h += col.merged ? dropdownTh(mergedOpts, mKey, 'high') : `<th class="tour-th">${fmtKey(col.key)}</th>`;
+      }
+      if (lowKeys.length) h += dropdownTh(lowOpts, lowKey, 'low');
+      h += `<th class="th-key total-th" style="white-space:nowrap"><img class="tour-icon tour-icon-wide" src="/total_points.png" alt="">总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
+        const extra = i >= RANK_LIMIT;
+        const hiddenAttr = extra && !rankExpanded[gender] ? ' style="display:none"' : '';
         const rc = i === 0 ? 'badge-gold' : i === 1 ? 'badge-silver' : i === 2 ? 'badge-bronze' : '';
         const d = deltas ? deltas[p.player_id] : 0;
         let trendColor = '', trendSymbol = '', trendNum = '';
         if (d > 0) { trendColor = '#38a169'; trendSymbol = '\u25b2'; trendNum = d; }
         else if (d < 0) { trendColor = '#e53e3e'; trendSymbol = '\u25bc'; trendNum = -d; }
         const trendVis = trendColor ? '' : 'visibility:hidden';
-        h += `<tr><td><span class="badge ${rc}">${i + 1}</span></td><td><strong>${displayName(p)}</strong></td>`;
-        for (const key of highKeys) {
-          const t = p.tournaments[key];
-          h += `<td>${t ? t.points : 0}${t?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
+        h += `<tr class="${extra ? 'rank-extra' : ''}"${hiddenAttr}><td class="hero-col"><span class="badge ${rc}">${i + 1}</span></td><td style="white-space:nowrap">${rankAvatarHtml(p, avatarMap)}<strong>${displayName(p)}</strong></td>`;
+        for (const col of columns) {
+          const ck = col.merged ? mKey : col.key;
+          const t = ck ? p.tournaments[ck] : null;
+          h += `<td class="tour-td">${t ? t.points : 0}${t?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
         if (lowKeys.length) {
           const lt = lowKey ? p.tournaments[lowKey] : null;
-          h += `<td>${lt ? lt.points : 0}${lt?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
+          h += `<td class="tour-td">${lt ? lt.points : 0}${lt?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
-        h += `<td style="vertical-align:middle;white-space:nowrap"><strong>${p.total_points}</strong> <span style="display:inline-flex;flex-direction:column;align-items:center;line-height:1;color:${trendColor || '#ccc'};${trendVis};vertical-align:middle">
+        h += `<td class="total-td" style="vertical-align:middle;white-space:nowrap"><strong>${p.total_points}</strong> <span style="display:inline-flex;flex-direction:column;align-items:center;line-height:1;color:${trendColor || '#ccc'};${trendVis};vertical-align:middle">
           <span style="font-size:10px;font-weight:bold;line-height:1.2">${trendNum || '0'}</span>
           <span style="font-size:14px;line-height:1.2">${trendSymbol || '\u25b2'}</span>
         </span></td></tr>`;
       });
-      h += `</tbody></table></div></div>`;
+      h += `</tbody></table></div>`;
+      // 超过 10 人时，表格下方给出折叠提示条：点击展开/收起完整榜单
+      if (players.length > RANK_LIMIT) {
+        const open = rankExpanded[gender];
+        const rest = players.length - RANK_LIMIT;
+        h += `<div class="rank-more" data-gender="${gender}" onclick="toggleRankExpand('${gender}')">${open
+          ? `▲ 收起，仅显示前 ${RANK_LIMIT} 名`
+          : `▼ 仅显示前 ${RANK_LIMIT} 名，还有 ${rest} 位选手 · 点击查看完整排名`}</div>`;
+      }
+      h += `</div>`;
       return h;
     }
 
@@ -899,6 +1106,19 @@ async function loadRankings() {
     html += renderRankTable(femalePoints, '女子', deltas);
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div>`; }
+}
+
+function toggleRankExpand(gender) {
+  rankExpanded[gender] = !rankExpanded[gender];
+  const open = rankExpanded[gender];
+  const btn = document.querySelector(`.rank-more[data-gender="${gender}"]`);
+  const card = btn && btn.closest('.card');
+  if (!card) return;
+  card.querySelectorAll('tr.rank-extra').forEach(tr => { tr.style.display = open ? '' : 'none'; });
+  const rest = card.querySelectorAll('tr.rank-extra').length;
+  btn.textContent = open
+    ? `▲ 收起，仅显示前 ${RANK_LIMIT} 名`
+    : `▼ 仅显示前 ${RANK_LIMIT} 名，还有 ${rest} 位选手 · 点击查看完整排名`;
 }
 
 function toggleLowDropdown(th) {
@@ -916,18 +1136,103 @@ function toggleLowDropdown(th) {
 
 function changeLowTournament(sel) {
   currentLowKey = sel.value;
+  lowUserPicked = true;
   document.querySelectorAll('.low-dd').forEach(d => d.style.display = 'none');
   document.querySelectorAll('.low-icon').forEach(i => i.textContent = '▶');
   loadRankings();
 }
 
+function toggleHighDropdown(th) {
+  const dd = th.querySelector('.low-dd');
+  const icon = th.querySelector('.high-icon');
+  if (!dd) return;
+  if (dd.style.display === 'none' || !dd.style.display) {
+    dd.style.display = 'block';
+    if (icon) icon.textContent = '▼';
+  } else {
+    dd.style.display = 'none';
+    if (icon) icon.textContent = '▶';
+  }
+}
+
+function changeHighTournament(sel) {
+  // 男女榜的 750 合并列互不相干，按所属表格的性别分别记录
+  const g = (sel.closest('table') || {}).dataset?.gender || 'male';
+  currentHigh750Key[g] = sel.value;
+  high750UserPicked[g] = true;
+  document.querySelectorAll('.low-dd').forEach(d => d.style.display = 'none');
+  document.querySelectorAll('.high-icon').forEach(i => i.textContent = '▶');
+  document.querySelectorAll('.low-icon').forEach(i => i.textContent = '▶');
+  loadRankings();
+}
+
 // ==================== Query by Tournament + Edition ====================
+// 赛事查询页左上角图标：赛事 id → 图标（base64），随下拉选中项更新
+let tourIconById = {};
+let tourIconByName = {};
+let queryTournaments = [];
+
+// 赛事图标按钮网格：点击某个赛事才加载它的最新赛况（不再一次性铺开所有赛事）
+function renderTourGrid() {
+  const g = document.getElementById('query-tour-grid');
+  if (!g) return;
+  g.innerHTML = queryTournaments.map(t => `
+    <div class="tour-tile" data-tid="${t.id}" onclick="showTournamentLatest('${t.id}')" title="${htmlEsc(t.name)}">
+      ${t.icon ? `<img src="${t.icon}" alt="">` : `<div class="tile-icon-ph">${htmlEsc((t.name || '?')[0])}</div>`}
+      <div class="tile-name">${htmlEsc(t.name)}</div>
+    </div>`).join('');
+}
+
+async function showTournamentLatest(tid) {
+  document.querySelectorAll('.tour-tile').forEach(el => el.classList.toggle('active', el.dataset.tid === String(tid)));
+  const sel = document.getElementById('query-tournament');
+  const ed = document.getElementById('query-edition');
+  if (sel) sel.value = String(tid);
+  if (ed) ed.value = '';
+  updateQueryTourIcon();
+
+  const el = document.getElementById('query-results');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  try {
+    await ensurePlayers();
+    const data = await api(`/api/query/rounds?tournamentId=${tid}`);
+    if (!data.length) { el.innerHTML = '<div class="card"><div class="loading">该赛事暂无赛况</div></div>'; return; }
+    const sorted = data.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id);
+    el.innerHTML = renderRoundCard(sorted[0]);
+  } catch (e) {
+    el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div></div>`;
+  }
+}
+function updateQueryTourIcon() {
+  const sel = document.getElementById('query-tournament');
+  const box = document.getElementById('query-tour-icon');
+  if (!sel || !box) return;
+  const tid = sel.value;
+  const label = tid ? (sel.options[sel.selectedIndex]?.text || '') : '';
+  const src = tid ? tourIconById[tid] : '';
+  if (src) {
+    box.innerHTML = `<img class="query-tour-icon" src="${src}" alt="" title="${htmlEsc(label)}">`;
+  } else if (tid) {
+    box.innerHTML = `<span class="query-tour-icon query-tour-icon-ph" title="${htmlEsc(label)}">${htmlEsc(label[0] || '?')}</span>`;
+  } else {
+    // 全部赛事：保留占位，避免标题左右跳动
+    box.innerHTML = `<span class="query-tour-icon query-tour-icon-ph" title="全部赛事">🏆</span>`;
+  }
+}
+
 async function initQueryPage() {
   const tournaments = await api('/api/tournaments');
+  queryTournaments = tournaments;
+  tourIconById = Object.fromEntries(tournaments.filter(t => t.icon).map(t => [String(t.id), t.icon]));
+  tourIconByName = Object.fromEntries(tournaments.filter(t => t.icon).map(t => [t.name, t.icon]));
   const sel = document.getElementById('query-tournament');
   sel.innerHTML = '<option value="">全部赛事</option>' +
     tournaments.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-  queryRecentHighLevelRounds();
+  sel.onchange = updateQueryTourIcon;
+  updateQueryTourIcon();
+  renderTourGrid();
+  document.getElementById('query-results').innerHTML =
+    '<div class="card"><div class="loading">👆 点击上方赛事图标，查看该赛事最新赛况</div></div>';
 }
 
 async function queryRecentHighLevelRounds() {
@@ -953,12 +1258,19 @@ async function queryRecentHighLevelRounds() {
   } catch (e) { el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div></div>`; }
 }
 
+// 赛事图标（按赛事名）：用于赛事查询页的轮次卡片标题，无图标则显示赛事名首字占位
+function tourIconByNameHtml(name) {
+  const src = tourIconByName[name];
+  if (src) return `<img class="round-tour-icon" src="${src}" alt="" title="${htmlEsc(name)}">`;
+  return `<span class="round-tour-icon round-tour-icon-ph" title="${htmlEsc(name)}">${htmlEsc((name || '?')[0])}</span>`;
+}
+
 function renderRoundCard(round) {
   const isFree = round.tournament_name === '狗王杯';
   let h = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">
-      <h3>📋 ${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</h3></div>`;
-  h += `<h4>排名</h4><table><thead><tr><th>#</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
+      <h3 class="round-card-title">${tourIconByNameHtml(round.tournament_name)}<span>${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</span></h3></div>`;
+  h += `<table><thead><tr><th>排名</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
   for (const r of round.ranking.rankings) {
     const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
     h += `<tr><td>${r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
@@ -982,6 +1294,7 @@ function renderRoundCard(round) {
 
 async function queryRounds() {
   const tid = document.getElementById('query-tournament').value;
+  updateQueryTourIcon();
   const edition = document.getElementById('query-edition').value.trim();
   const el = document.getElementById('query-results');
   el.innerHTML = '<div class="loading">查询中...</div>';
