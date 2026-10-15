@@ -5,7 +5,18 @@ const { initDatabase, saveDatabase, getDb } = require('./database');
 const app = express();
 
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// 静态资源缓存策略：
+// - HTML 不带版本号，必须每次回源校验，否则改版后用户会拿到旧页面
+// - 其他资源（css/js/图片）靠 URL 上的 ?v=N 破缓存，可放心让 CDN 缓存一段时间
+//   （改版后忘记换版本号 = CDN 继续喂旧文件，这是 2026-10-15 线上样式错乱的根因）
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: true,
+  lastModified: true,
+  setHeaders(res, filePath) {
+    if (/\.html?$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    else res.setHeader('Cache-Control', 'public, max-age=3600');
+  }
+}));
 
 let db;
 

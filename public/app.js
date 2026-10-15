@@ -1,4 +1,8 @@
 // ==================== Navigation ====================
+// 静态资源版本号：CDN（Cloudflare）会缓存无版本号的静态文件，改版后必须换号才能生效。
+// 改动 style.css / 图片后：这里 +1，并同步 index.html 里的 /style.css?v=N 与 /app.js?v=N。
+const ASSET_V = '25';
+function assetUrl(p) { return p + '?v=' + ASSET_V; }
 let currentAdminSub = 'players';
 function displayName(p) { return p.real_name || p.name; }
 function htmlEsc(s) {
@@ -104,7 +108,7 @@ async function loadHome() {
         </p>
       </div>
       <div class="home-image-wrapper">
-        <img src="/鸽子集帅.jpg" alt="鸽子集帅" class="home-image">
+        <img src="${assetUrl('/鸽子集帅.jpg')}" alt="鸽子集帅" class="home-image">
       </div>
     </div>
     <div class="home-card rules-card">
@@ -1056,12 +1060,12 @@ async function loadRankings() {
       </th>`;
       }
       let h = `<div class="card"><h3>🏆 ${label}总积分排名</h3>`;
-      h += `<div class="rank-table-wrap"><table class="rank-table" data-gender="${gender}"><thead><tr><th class="th-hero-cell"><span class="th-hero" style="background-image:url('${gender === 'male' ? '/syq.png' : '/ztqy.png'}')"></span></th><th class="th-key">姓<span class="th-gap"></span>名</th>`;
+      h += `<div class="rank-table-wrap"><table class="rank-table" data-gender="${gender}"><thead><tr><th class="th-hero-cell"><span class="th-hero" style="background-image:url('${assetUrl(gender === 'male' ? '/syq.png' : '/ztqy.png')}')"></span></th><th class="th-key">姓<span class="th-gap"></span>名</th>`;
       for (const col of columns) {
         h += col.merged ? dropdownTh(mergedOpts, mKey, 'high') : `<th class="tour-th">${fmtKey(col.key)}</th>`;
       }
       if (lowKeys.length) h += dropdownTh(lowOpts, lowKey, 'low');
-      h += `<th class="th-key total-th" style="white-space:nowrap"><img class="tour-icon tour-icon-wide" src="/total_points.png" alt="">总积分</th></tr></thead><tbody>`;
+      h += `<th class="th-key total-th" style="white-space:nowrap"><img class="tour-icon tour-icon-wide" src="${assetUrl('/total_points.png')}" alt="">总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
         const extra = i >= RANK_LIMIT;
         const hiddenAttr = extra && !rankExpanded[gender] ? ' style="display:none"' : '';
