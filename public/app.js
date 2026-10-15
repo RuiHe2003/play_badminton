@@ -1,7 +1,7 @@
 // ==================== Navigation ====================
 // 静态资源版本号：CDN（Cloudflare）会缓存无版本号的静态文件，改版后必须换号才能生效。
 // 改动 style.css / 图片后：这里 +1，并同步 index.html 里的 /style.css?v=N 与 /app.js?v=N。
-const ASSET_V = '25';
+const ASSET_V = '26';
 function assetUrl(p) { return p + '?v=' + ASSET_V; }
 let currentAdminSub = 'players';
 function displayName(p) { return p.real_name || p.name; }
@@ -235,12 +235,13 @@ async function initMatchPage() {
 // ==================== Tournament Icon ====================
 let cachedTournaments = [];
 
-// 压缩成正方形 128x128 的 JPEG，避免 base64 直接入库把 data.db 撑大
+// 压缩成正方形 256x256 的 JPEG：查询页图标格子现在放大到 110px，高清屏物理像素要 220+，
+// 128 的旧尺寸会被浏览器放大导致模糊（2026-10-16 用户反馈图标糊就是这个原因）
 function compressIcon(dataUrl) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = function () {
-      const SIZE = 128;
+      const SIZE = 256;
       const canvas = document.createElement('canvas');
       canvas.width = SIZE;
       canvas.height = SIZE;
@@ -250,7 +251,7 @@ function compressIcon(dataUrl) {
       ctx.fillRect(0, 0, SIZE, SIZE);
       const side = Math.min(img.width, img.height);
       ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, SIZE, SIZE);
-      resolve(canvas.toDataURL('image/jpeg', 0.85));
+      resolve(canvas.toDataURL('image/jpeg', 0.9));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
