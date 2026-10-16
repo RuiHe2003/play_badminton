@@ -1,3 +1,25 @@
+/* 积分排名卡片标题用的艺术字体：站酷庆科黄油体。
+   已用 pyftsubset 子集化为「男子总积分排名女」8 个字，仅 1.8KB，无需联网。
+   ?v= 独立于 style.css 的版本号：以后换字体文件时改这里即可刷新浏览器缓存。 */
+@font-face {
+  font-family: 'Rank Art';
+  src: url('/fonts/zcool-qingke-huangyou.woff2?v=1') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+/* 积分排名页顶部大标题用的粗体：思源黑体 Black（Noto Sans SC 900），真 900 字重。
+   只子集化了「积分排名榜」几个字，1.8KB。
+   为什么不用「给黄油体加个粗体」：黄油体本身就是重体，字腔已无余量，
+   靠几何膨胀做粗体会让笔画互相粘连（实测 r≥16 就糊成一坨），物理上做不出真粗体。 */
+@font-face {
+  font-family: 'Rank Title';
+  src: url('/fonts/noto-sans-sc-black.woff2?v=1') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif; background: #f0f2f5; color: #333; }
 nav { background: linear-gradient(135deg, #a8d8ea, #c9e4f0); color: #1a3a4a; padding: 0 24px; display: flex; align-items: center; position: sticky; top: 0; z-index: 100; }
@@ -15,6 +37,26 @@ nav { background: linear-gradient(135deg, #a8d8ea, #c9e4f0); color: #1a3a4a; pad
 .tab.active { display: block; }
 h2 { font-size: 24px; margin-bottom: 20px; color: #1a202c; }
 h3 { font-size: 16px; margin-bottom: 12px; color: #2d3748; }
+/* 积分排名两个卡片标题（男子/女子总积分排名）改用艺术字体。
+   注意：该字体只有 400 字重，必须显式声明 font-weight: 400，
+   否则浏览器会对 h3 默认的 bold 做「合成加粗」，笔画会发糊变形。 */
+#rankings-content .card > h3 {
+  font-family: 'Rank Art', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 1px;
+}
+/* 积分排名页顶部大标题：换成思源黑体 Black，放大 + 拉宽字距，做出「大气」的页头感。
+   font-synthesis: none 是保险——真 900 字重已随字体提供，禁止浏览器再叠一层合成加粗。 */
+#tab-rankings > h2 {
+  font-family: 'Rank Title', 'Rank Art', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 30px;
+  letter-spacing: 3px;
+  color: #1a3a4a;
+  margin-bottom: 22px;
+}
 h4 { font-size: 14px; margin-bottom: 8px; color: #4a5568; }
 .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
@@ -231,7 +273,6 @@ body:has(#tab-home.active) .container { padding: 0; }
   .tour-tile { padding: 9px 7px; gap: 7px; }
   .tour-tile img, .tile-icon-ph { max-width: 170px; height: 155px; }
   .tile-icon-ph { font-size: 46px; }
-  .tile-name { font-size: 15px; }
   .h2h-summary .big-score { font-size: 36px; }
 }
 
@@ -287,23 +328,33 @@ body:has(#tab-home.active) .container { padding: 0; }
 .rank-more:hover { border-color: #48bb78; color: #276749; background: #f0fff4; }
 
 /* 赛事查询页：赛事图标按钮网格（点击才加载该赛事最新赛况） */
-/* 电脑端：一行四个，图标随格子宽度自适应（92%，上限 180px），
+/* 电脑端：一行四个，图标随格子宽度自适应（100%，上限 209px），
    内边距收到 10px/8px，让图标占满按钮、四周空白最小化。
-   源图统一 512x512（见 app.js ICON_SIZE），最大物理需求 225px（180px@125% 缩放），
-   仍有 2.28x 像素余量，放大后不糊。 */
+   源图统一 512x512（见 app.js ICON_SIZE），最大物理需求 261px（209px@125% 缩放），
+   仍有 1.96x 像素余量，放大后不糊。 */
 .tour-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .tour-tile { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 8px;
   background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; cursor: pointer; transition: all .15s; }
 .tour-tile:hover { border-color: #48bb78; box-shadow: 0 4px 14px rgba(0, 0, 0, .1); transform: translateY(-2px); }
 .tour-tile.active { border-color: #48bb78; background: #f0fff4; }
-/* 用宽高自适应而非固定 px：格子变宽时图标跟着长，永远贴着按钮内缘。
-   aspect-ratio 在老 Android WebView（<88）不支持，故先给 height 兜底成正方，
-   支持的浏览器再由 aspect-ratio 精确接管（两者同值时无差异，不会跳动）。 */
-.tour-tile img, .tile-icon-ph { width: 92%; max-width: 180px; height: 165px; aspect-ratio: 1 / 1; }
-.tour-tile img { border-radius: 12px; object-fit: cover; display: block; }
-.tile-icon-ph { border-radius: 12px; background: #e2e8f0; color: #a0aec0;
+/* 高度**一律不写死**：只要宽高相等，object-fit:cover 就一边都不会裁。
+   源图统一 512x512，img 的 height:auto 会由内在比例算出与宽度相等的高度，天然正方。
+   （旧写法写死 height:165px：1280 视口得到 180x165 的盒子，cover 把上下各裁 7.5px
+    —— 就是"赛事标志上下少了一点"；窄视口盒子反过来变成竖长，改成左右各裁一截。）
+
+   尺寸：格子里的赛事名已去掉（图标本身就是带赛事名的 logo），
+   原来留给名字的高度全部转给图标 ——
+   · width:100% 让它顶满内容区（原来只有 92%，右侧空一大条白边）；
+   · max-width:209px = 原上限 180px + 原名称块 28.8px（20.8px 行高 + 8px 间距），
+     于是宽屏下按钮外框仍是 230.8px 高（209 图标 + 20 内边距 + 2 边框），按钮尺寸不变；
+   · 窄视口内容区不到 209px 时，图标顶满内容区宽度、按钮随之略矮 ——
+     不能再大，否则图标会被裁掉，违反"图标完整"。 */
+.tour-tile img, .tile-icon-ph { width: 100%; max-width: 209px; aspect-ratio: 1 / 1; }
+.tour-tile img { border-radius: 12px; object-fit: cover; display: block; height: auto; }
+/* 占位块没有内在比例，且老 Android WebView（<88）不认 aspect-ratio，故给固定高度兜底；
+   支持的浏览器由文件末尾的 @supports 交给 aspect-ratio 算，保证它也是正方。 */
+.tile-icon-ph { border-radius: 12px; background: #e2e8f0; color: #a0aec0; height: 165px;
   display: flex; align-items: center; justify-content: center; font-size: 52px; }
-.tile-name { font-size: 16px; font-weight: 600; color: #2d3748; text-align: center; line-height: 1.3; }
 
 /* 赛事查询页左上角：当前选中赛事的图标，尺寸与积分排名页赛事图标同为 3em 档（42/36/33px） */
 .query-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
@@ -358,6 +409,7 @@ body:has(#tab-home.active) .container { padding: 0; }
   .container { padding: 8px; }
   .card { padding: 10px; }
   h2 { font-size: 18px; margin-bottom: 12px; }
+  #tab-rankings > h2 { font-size: 24px; letter-spacing: 2px; margin-bottom: 14px; }
   table { font-size: 11px; }
   th, td { padding: 4px 3px; }
   .form-row { gap: 6px; }
@@ -376,9 +428,10 @@ body:has(#tab-home.active) .container { padding: 0; }
   /* 手机屏一行两个赛事，图标同样占满格子宽度便于点击 */
   .tour-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .tour-tile { padding: 8px 6px; gap: 6px; }
-  .tour-tile img, .tile-icon-ph { max-width: 150px; height: 135px; border-radius: 10px; }
-  .tile-icon-ph { font-size: 40px; }
-  .tile-name { font-size: 13px; }
+  /* 手机端只收窄 max-width（173px = 原上限 150px + 原名称块 22.9px，按钮高度不变）；
+     高度交给「宽高相等」那条规则，写死会重新引入裁切 */
+  .tour-tile img, .tile-icon-ph { max-width: 173px; border-radius: 10px; }
+  .tile-icon-ph { height: 135px; font-size: 40px; }
   .rank-more { font-size: 13px; padding: 10px 8px; }
   .round-tour-icon { width: 33px; height: 33px; border-radius: 5px; }
   .round-tour-icon-ph { line-height: 33px; font-size: 15px; }
@@ -409,4 +462,185 @@ body:has(#tab-home.active) .container { padding: 0; }
   .honor-row-title { font-size: 14px; }
   .honor-chip { font-size: 12px; padding: 5px 9px; }
   .points-table th, .points-table td { font-size: 10px; padding: 3px 2px; }
+}
+
+/* 赛事图标占位块：放在文件最末，统一覆盖上面各断点写死的 height，
+   改由「宽度 92% + 1:1」算出正方高度，和 .tour-tile img 完全一致。
+   老 Android WebView（<88）不认 aspect-ratio，会保留各断点的固定高度兜底，不会塌。 */
+@supports (aspect-ratio: 1 / 1) {
+  .tile-icon-ph { height: auto; }
+}
+
+/* ==================== 创建赛事（新版赛事引擎） ====================
+   视觉沿用站内既有语汇：白卡片 + 圆角 + 绿色主色，不引入新框架。
+   新增的只有「赛事工作台」那几块（积分榜 / 签表 / 单项录入）。 */
+
+/* 表单里的分组小标题 */
+.ev-sec { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e8f0; }
+.ev-sec-title { font-size: 13px; font-weight: 700; color: #4a5568; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ev-hint { font-size: 12px; color: #a0aec0; font-weight: 400; }
+
+/* 单选组（赛事类型 / 赛制）：用 label 包原生 radio，键盘与无障碍天然可用 */
+.ev-radios { display: flex; gap: 8px; flex-wrap: wrap; }
+.ev-radio { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 14px;
+  border: 1px solid #d2d6dc; border-radius: 8px; cursor: pointer; background: #fff; transition: all .15s; white-space: nowrap; }
+.ev-radio:hover { border-color: #48bb78; }
+.ev-radio input { margin: 0; accent-color: #48bb78; }
+.ev-radio.on { border-color: #48bb78; background: #f0fff4; color: #276749; font-weight: 600; }
+.ev-radio.disabled { opacity: .45; cursor: not-allowed; }
+
+/* 团体项目：已选顺序 + 可加项目 */
+.ev-order-list { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ev-order-chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 6px 5px 12px;
+  background: #ebf8ff; border: 1px solid #90cdf4; border-radius: 999px; font-size: 14px; color: #2c5282; font-weight: 600; }
+.ev-order-chip .ev-idx { font-size: 11px; color: #63a0c8; font-weight: 700; }
+.ev-mini { padding: 2px 8px; font-size: 12px; border-radius: 6px; line-height: 1.6; }
+.ev-mini.danger { background: #fed7d7; color: #9b2c2c; }
+.ev-mini.danger:hover { background: #feb2b2; }
+.ev-add-item { background: #edf2f7; color: #4a5568; border: 1px dashed #cbd5e0; }
+.ev-add-item:hover { background: #e2e8f0; color: #2d3748; }
+
+/* 参赛名单草稿：已录入的条目 */
+.ev-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ev-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+  background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 13px; }
+.ev-chip-num { font-size: 11px; color: #a0aec0; font-weight: 700; }
+.ev-chip button { padding: 1px 7px; font-size: 12px; background: #e2e8f0; color: #4a5568; }
+.ev-chip button:hover { background: #fed7d7; color: #9b2c2c; }
+.ev-empty { font-size: 13px; color: #a0aec0; padding: 6px 0; }
+
+/* 赛事列表 */
+.ev-card-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid #e2e8f0;
+  border-radius: 10px; margin-bottom: 10px; cursor: pointer; transition: all .15s; background: #fff; flex-wrap: wrap; }
+.ev-card-row:hover { border-color: #48bb78; box-shadow: 0 2px 10px rgba(0,0,0,.07); }
+.ev-card-main { flex: 1; min-width: 0; }
+.ev-card-name { font-size: 16px; font-weight: 700; color: #2d3748; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ev-card-meta { font-size: 12px; color: #718096; margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+.ev-tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: #edf2f7; color: #4a5568; }
+.ev-tag.team { background: #faf5ff; color: #6b46c1; }
+.ev-tag.done { background: #c6f6d5; color: #22543d; }
+.ev-tag.draft { background: #fefcbf; color: #744210; }
+
+/* 赛事定义卡片下的「历届」展开区（创建赛事页） */
+.ev-editions { flex-basis: 100%; margin-top: 10px; border-top: 1px dashed #e2e8f0; padding-top: 8px; }
+.ev-edition-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer; font-size: 13px; color: #4a5568; }
+.ev-edition-row:hover { background: #f7fafc; color: #2d3748; }
+.ev-edition-row > span:first-child { font-weight: 700; color: #2d3748; min-width: 52px; }
+.ev-card-actions { display: flex; gap: 6px; flex: none; }
+.ev-card-actions button { padding: 4px 12px; font-size: 12px; }
+
+/* 工作台头部 */
+.ev-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.ev-head h2 { margin-bottom: 0; }
+.ev-head-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 小组积分榜 */
+.ev-group { margin-bottom: 18px; }
+.ev-group-title { font-size: 14px; font-weight: 700; color: #2d3748; margin-bottom: 8px;
+  padding-left: 8px; border-left: 4px solid #48bb78; }
+.ev-standings { font-size: 13px; }
+.ev-standings tr.qualify td { background: #f0fff4; }
+.ev-rank-cell { font-weight: 700; color: #2d3748; width: 42px; }
+
+/* 对阵列表 / 签表 */
+.ev-tie { border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 10px; overflow: hidden; background: #fff; }
+.ev-tie.done { border-color: #c6f6d5; }
+.ev-tie-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; }
+.ev-tie-head:hover { background: #f7fafc; }
+.ev-tie-sides { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.ev-side { font-weight: 600; color: #2d3748; }
+.ev-side.win { color: #276749; }
+.ev-side.lose { color: #a0aec0; font-weight: 400; }
+.ev-vs { color: #cbd5e0; font-size: 12px; }
+.ev-tie-score { font-size: 16px; font-weight: 700; color: #2d3748; flex: none; }
+.ev-tie-flag { font-size: 11px; padding: 1px 8px; border-radius: 999px; flex: none; }
+.ev-tie-flag.pending { background: #edf2f7; color: #718096; }
+.ev-tie-flag.done { background: #c6f6d5; color: #22543d; }
+.ev-tie-body { padding: 0 12px 12px; border-top: 1px solid #edf2f7; }
+.ev-item-block { padding: 10px 0; border-bottom: 1px dashed #edf2f7; }
+.ev-item-block:last-child { border-bottom: none; }
+.ev-item-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.ev-item-name { font-size: 13px; font-weight: 700; color: #2d3748; }
+.ev-item-res { font-size: 12px; font-weight: 700; }
+.ev-item-res.w1 { color: #2f855a; } .ev-item-res.w2 { color: #2b6cb0; }
+.ev-item-res.skip { color: #a0aec0; }
+.ev-lineup { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ev-lineup select { padding: 5px 8px; font-size: 13px; border: 1px solid #d2d6dc; border-radius: 6px; background: #fff; }
+.ev-games { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.ev-game-set { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; color: #718096; }
+.ev-games input { width: 46px; padding: 4px 6px; font-size: 13px; text-align: center;
+  border: 1px solid #d2d6dc; border-radius: 6px; }
+.ev-tie-foot { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.ev-tie-foot .ev-msg { font-size: 12px; color: #38a169; }
+.ev-skip-note { font-size: 12px; color: #a0aec0; background: #f7fafc; padding: 4px 10px; border-radius: 6px; }
+
+/* 淘汰签表：按轮分栏 */
+.ev-bracket-round { margin-bottom: 16px; }
+.ev-bracket-round-title { font-size: 13px; font-weight: 700; color: #4a5568; margin-bottom: 8px; }
+.ev-slot { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid transparent;
+  border-radius: 6px; font-size: 14px; font-weight: 600; color: #2d3748; }
+.ev-slot.empty { color: #cbd5e0; font-weight: 400; }
+/* 手动调整签表：点击一个位置选中，再点另一个交换 */
+.ev-slot.pickable { cursor: pointer; }
+.ev-slot.pickable:hover { border-color: #48bb78; background: #f0fff4; }
+.ev-slot.picked { border-color: #48bb78; background: #c6f6d5; }
+
+/* 最终排名 */
+.ev-final tr.top1 td { background: #fffff0; font-weight: 700; }
+.ev-final tr.top2 td { background: #f7fafc; font-weight: 600; }
+.ev-final tr.top3 td { background: #fffaf0; font-weight: 600; }
+
+/* 赛事查询页里的赛事卡片：与老赛事的轮次卡片外观一致 */
+.ev-brief { font-size: 14px; color: #4a5568; line-height: 1.9; }
+.ev-brief b { color: #2d3748; }
+
+/* 前台只读：与老赛事卡片一致，逐场对阵折进这个按钮里 */
+.ev-detail-toggle {
+  width: 100%; margin-top: 16px; padding: 8px; background: #e2e8f0;
+  border: none; border-radius: 6px; cursor: pointer; font-size: 14px; color: #2d3748;
+}
+.ev-final-pts { width: 72px; text-align: right; font-weight: 600; color: #2b6cb0; }
+.ev-member-col { width: 96px; }
+
+/* 团体赛的队员名单折起来：默认只显示「👥 N 人」，点开才列名 */
+.ev-roster { display: inline-block; }
+.ev-roster > summary {
+  cursor: pointer; list-style: none; font-size: 12px; color: #4a5568;
+  background: #edf2f7; border-radius: 4px; padding: 2px 8px; display: inline-block; user-select: none;
+}
+.ev-roster > summary::-webkit-details-marker { display: none; }
+.ev-roster > summary:hover { background: #e2e8f0; color: #2b6cb0; }
+.ev-roster[open] > summary { background: #e6fffa; color: #285e61; }
+.ev-roster-body {
+  margin-top: 4px; font-size: 12px; color: #718096; line-height: 1.6;
+  background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 4px 8px;
+}
+/* 最终排名里的成员列：展开后一行排开，别被窄列挤成竖排 */
+.ev-final .ev-roster-body { white-space: nowrap; }
+.ev-roster-inline { vertical-align: middle; }
+.ev-roster-inline .ev-roster-body { position: absolute; z-index: 5; max-width: 260px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.ev-roster-inline { position: relative; }
+
+/* 手动分组面板：一行一个参赛单元，带种子序号与总积分，右边选组 */
+.ev-group-pick { display: flex; flex-direction: column; gap: 6px; }
+.ev-gp-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+}
+.ev-gp-seed { font-size: 12px; color: #718096; background: #edf2f7; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }
+.ev-gp-name { flex: 1; font-size: 14px; color: #2d3748; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-gp-pts { font-size: 12px; color: #4a5568; white-space: nowrap; }
+.ev-gp-row select { max-width: 110px; padding: 4px 6px; font-size: 13px; }
+
+@media (max-width: 480px) {
+  .ev-head-actions { margin-left: 0; width: 100%; }
+  .ev-head-actions button { flex: 1; }
+  .ev-card-actions { flex-direction: column; }
+  .ev-tie-sides { font-size: 13px; }
+  .ev-games input { width: 40px; }
+  .ev-lineup select { font-size: 12px; max-width: 46vw; }
+  .ev-gp-row { flex-wrap: wrap; }
+  .ev-gp-name { flex-basis: 100%; }
 }

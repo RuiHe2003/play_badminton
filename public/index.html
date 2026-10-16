@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>羽毛球积分系统</title>
-  <link rel="stylesheet" href="/style.css?v=32">
+  <link rel="stylesheet" href="/style.css?v=40">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
 </head>
 <body>
@@ -23,6 +23,7 @@
   <div id="admin-subnav">
     <a href="#" data-subtab="players" class="active">👤 选手管理</a>
     <a href="#" data-subtab="matches">🏟️ 比赛管理</a>
+    <a href="#" data-subtab="events">➕ 创建赛事</a>
   </div>
 
   <div class="container">
@@ -79,6 +80,9 @@
         <div id="existing-round-info" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #f6e05e;border-radius:6px;font-size:14px">
           🔔 该赛事此届已有轮次，<a href="#" onclick="loadExistingRound();return false" style="color:#d69e2e;font-weight:600">点击此处加载已有轮次进行比分编辑</a>
         </div>
+        <!-- 新赛制赛事（「创建赛事」建的）：日期 / 级别 / 参赛名单按届录入 -->
+        <div id="ev-edition-card" class="card" style="display:none"></div>
+        <div id="ev-workspace-match" style="display:none"></div>
         <div id="participant-area">
           <div class="form-row">
             <strong style="min-width:60px">参赛者：</strong>
@@ -135,6 +139,12 @@
       </div>
     </div>
 
+    <!-- 创建赛事（新版赛事引擎：小组循环 / 淘汰签表 / 团体对抗） -->
+    <div id="tab-events" class="tab">
+      <h2>➕ 创建赛事</h2>
+      <div id="event-page"><div class="loading">加载中...</div></div>
+    </div>
+
     <!-- 积分排名 -->
     <div id="tab-rankings" class="tab">
       <h2>🏆 积分排名</h2>
@@ -166,7 +176,6 @@
         <button class="back-btn" onclick="closeTourDetail()" title="返回赛事列表">
           <span class="back-arrow" aria-hidden="true"></span>返回
         </button>
-        <span id="detail-tour-icon" class="query-tour-icon-slot"></span>
         <h2 id="detail-tour-title">赛事详情</h2>
       </div>
       <div id="tour-detail-body"></div>
@@ -229,6 +238,6 @@
     </div>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
-  <script src="/app.js?v=34"></script>
+  <script src="/app.js?v=50"></script>
 </body>
 </html>

@@ -20,6 +20,32 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 let db;
 
+// 派生的全量缓存（荣誉 / 年度最高 / 赛事索引）全部挂在写操作上失效。
+// 集中在这里而不是散落到各写接口 —— 以后新加写接口不会漏掉。
+function invalidateDerivedCaches() {
+  honorsCache = null;      // 荣誉是全量排名推导的，录一场比赛就可能翻盘
+  yearBestCache = null;    // 年度最高名次同样是全量回放推导的
+  eventEditionRoundMap = null;  // 新赛事「届」→ round_id 索引
+  eventTourneyMap = null;       // 新赛事 → tournament_id 索引
+}
+
+// 批量写入用的事务包装：saveDatabase() 每次都会把整个库（约 2MB）写回磁盘，
+// 生成小组对阵动辄上百次插入，逐个保存会把一次「生成」拖成好几秒。
+// tx() 内所有写操作只落盘一次；_defer 计数支持嵌套。
+let _deferDepth = 0;
+function tx(fn) {
+  _deferDepth++;
+  try {
+    return fn();
+  } finally {
+    _deferDepth--;
+    if (_deferDepth === 0) {
+      saveDatabase();
+      invalidateDerivedCaches();
+    }
+  }
+}
+
 function query(sql, params = []) {
   const stmt = db.prepare(sql);
   const isSelect = /^\s*(SELECT|WITH)/i.test(sql);
@@ -34,10 +60,9 @@ function query(sql, params = []) {
   }
   stmt.step();
   stmt.free();
+  if (_deferDepth > 0) return null;   // 事务中，等 tx() 收尾统一落盘
   saveDatabase();
-  // 任何写操作都让荣誉缓存失效：荣誉是全量排名推导出来的，录一场比赛就可能翻盘。
-  // 挂钩在这里而不是散落在各写接口里 —— 以后新加写接口不会漏掉。
-  honorsCache = null;
+  invalidateDerivedCaches();
   return null;
 }
 
@@ -54,13 +79,24 @@ app.get('/api/players', (req, res) => {
 // 加字段会让那些地方白白多背一次聚合查询的开销。
 app.get('/api/players/with-editions', (req, res) => {
   const players = query('SELECT id, name, gender, real_name, avatar FROM players ORDER BY name');
+  // 两个来源：老赛事的 teams 表，以及新版赛事的参赛单元成员。
+  // 新版赛事不写 teams（团体赛一个单元 4~8 人，装不进 player1/player2 两列），
+  // 所以这里必须并一份，否则参加过新赛事的选手「届数」会少算。
   const rows = query(`
-    SELECT DISTINCT t.player1_id AS pid, r.tournament_id AS tid, r.edition AS ed
-    FROM (SELECT round_id, player1_id FROM teams
-          UNION ALL
-          SELECT round_id, player2_id FROM teams WHERE player2_id IS NOT NULL) t
-    JOIN rounds r ON r.id = t.round_id
-    WHERE t.player1_id IS NOT NULL
+    SELECT DISTINCT x.pid AS pid, r.tournament_id AS tid, r.edition AS ed
+    FROM (
+      SELECT player1_id AS pid, round_id FROM teams
+      UNION ALL
+      SELECT player2_id AS pid, round_id FROM teams WHERE player2_id IS NOT NULL
+      UNION ALL
+      SELECT m.player_id AS pid, ev.round_id AS round_id
+      FROM event_entry_members m
+      JOIN event_entries e ON e.id = m.entry_id
+      JOIN events ev ON ev.id = e.event_id
+      WHERE ev.round_id IS NOT NULL
+    ) x
+    JOIN rounds r ON r.id = x.round_id
+    WHERE x.pid IS NOT NULL
   `);
   // 按选手聚合成 Set，再取 size —— 即该选手参加过的届数
   const byPlayer = {};
@@ -132,7 +168,14 @@ app.delete('/api/players/:id', (req, res) => {
 // ==================== Tournaments ====================
 
 app.get('/api/tournaments', (req, res) => {
-  res.json(query('SELECT id, name, type, level, icon FROM tournaments'));
+  const rows = query('SELECT id, name, type, level, icon FROM tournaments');
+  // is_event / event_id：该赛事是不是「创建赛事」新建的，以及对应的事件 id。
+  // 新赛事在赛事查询/积分排名里地位与老赛事完全同等，只有「比赛管理」的下拉要把它排掉
+  // —— 那些赛事由赛事工作台自己管轮次，混进「创建新轮次」会让人录出两套数据。
+  // 前台点赛事图标时也靠 event_id 决定跳「轮次详情」还是「赛事工作台」。
+  const evByTid = {};
+  for (const r of query('SELECT id, tournament_id FROM events WHERE tournament_id IS NOT NULL')) evByTid[r.tournament_id] = r.id;
+  res.json(rows.map(t => ({ ...t, is_event: evByTid[t.id] ? 1 : 0, event_id: evByTid[t.id] || null })));
 });
 
 app.post('/api/tournaments', (req, res) => {
@@ -431,7 +474,7 @@ function calculateRoundRankings(roundId, level) {
 }
 
 app.get('/api/rankings/:roundId', (req, res) => {
-  res.json(calculateRoundRankings(parseInt(req.params.roundId), undefined));
+  res.json(roundRankings(parseInt(req.params.roundId), undefined));
 });
 
 // Per-player ranking for free-doubles tournaments (e.g. 狗王杯, men's doubles only)
@@ -498,9 +541,39 @@ function calculatePlayerRankings(roundId, level) {
   return { rankings: tied, d };
 }
 
+// ==================== 排名分发器 ====================
+// 「这一轮的名次怎么算」只有一个入口，全站都从这里走。
+// 老赛事原封不动：狗王杯走个人排名，其余走队伍排名（行为与以前逐字节一致）。
+// 新赛事（有 events 行）走赛事引擎 —— 名次来自小组积分榜 + 淘汰签表，而不是简单循环赛胜负。
+// 之所以做成分发器而不是在赛事侧另起一套积分：只有这样，总积分榜、荣誉、选手资料页、
+// 赛事查询才会自动把新赛事算进去，真正做到「地位同等」，且不会出现两套口径。
+
+// 一名参赛单元包含哪些选手。团体赛一个单元可以有多人。
+// 老赛事的排名行没有 member_ids，就退化成 player1/player2 —— 这也是它零回归的原因。
+function membersOf(rank) {
+  if (rank && Array.isArray(rank.member_ids) && rank.member_ids.length) return rank.member_ids;
+  if (!rank) return [];
+  return [rank.player1_id, rank.player2_id].filter(Boolean);
+}
+
+// roundId 名次。tournamentName 可选；不传会自动查（多一次查询，换来调用点不必都改）。
+function roundRankings(roundId, level, tournamentName) {
+  const ed = editionByRound(roundId);
+  if (ed) return computeEventRanking(ed, level);
+  let tname = tournamentName;
+  if (tname === undefined) {
+    const r = query('SELECT t.name AS n FROM rounds r JOIN tournaments t ON t.id = r.tournament_id WHERE r.id = ?', [roundId])[0];
+    tname = r ? r.n : '';
+  }
+  if (tname === '狗王杯') return calculatePlayerRankings(roundId, level);
+  return calculateRoundRankings(roundId, level);
+}
+
 // ==================== Points Calculation ====================
 
-function computePoints(excludeRoundId) {
+// upToRound（可选）：只统计「到该轮为止」的比赛，用于按时间回放历史榜单。
+// 不传 = 全量（现状行为，所有既有调用方不受影响）。
+function computePoints(excludeRoundId, upToRound) {
   const tournaments = query('SELECT * FROM tournaments');
   const allPlayers = query('SELECT id, name, gender, real_name FROM players ORDER BY name');
 
@@ -513,6 +586,10 @@ function computePoints(excludeRoundId) {
     let allRounds = query('SELECT * FROM rounds WHERE tournament_id = ? ORDER BY level, date ASC, id ASC', [tour.id]);
     if (!allRounds.length) continue;
     if (excludeRoundId) allRounds = allRounds.filter(r => r.id !== excludeRoundId);
+    // 回放截断：日期是统一的 YYYY-MM-DD，字符串比较可直接用。
+    // 同日多轮靠 id 定序 —— 已核查全库同日最多 2 轮且 id 单调，排序稳定。
+    if (upToRound) allRounds = allRounds.filter(r =>
+      r.date < upToRound.date || (r.date === upToRound.date && r.id <= upToRound.id));
     if (!allRounds.length) continue;
 
     const levelGroups = {};
@@ -529,34 +606,37 @@ function computePoints(excludeRoundId) {
         acc[p.id] = { points: 0, lastD: null };
       }
 
-      const isFree = tour.name === '狗王杯';
-      for (const round of rounds) {
-        const result = isFree ? calculatePlayerRankings(round.id, lvl) : calculateRoundRankings(round.id, lvl);
-        const { rankings, d } = result;
-        const participants = new Set();
+    // 新版「创建赛事」的赛事一律以 events 表判定，绝不用名字猜
+    // （用户可以给新赛事起名叫「狗王杯」，按名字判定会把它错当成自由双打）。
+    const ev = eventByTournamentId(tour.id);
+    const isFree = !ev && tour.name === '狗王杯';
+    for (const round of rounds) {
+      const ed = ev ? editionByRound(round.id) : null;
+      const result = ed
+        ? computeEventRanking(ed, lvl)
+        : (isFree ? calculatePlayerRankings(round.id, lvl) : calculateRoundRankings(round.id, lvl));
+      const { rankings, d } = result;
+      const participants = new Set();
 
-        for (const rank of rankings) {
-          if (isFree) {
-            participants.add(rank.player_id);
-            if (acc[rank.player_id]) {
-              acc[rank.player_id].points = rank.points_earned;
-              acc[rank.player_id].lastD = d;
-            }
-          } else {
-            participants.add(rank.player1_id);
-            if (acc[rank.player1_id]) {
-              acc[rank.player1_id].points = rank.points_earned;
-              acc[rank.player1_id].lastD = d;
-            }
-            if (rank.player2_id) {
-              participants.add(rank.player2_id);
-              if (acc[rank.player2_id]) {
-                acc[rank.player2_id].points = rank.points_earned;
-                acc[rank.player2_id].lastD = d;
-              }
+      for (const rank of rankings) {
+        if (isFree) {
+          participants.add(rank.player_id);
+          if (acc[rank.player_id]) {
+            acc[rank.player_id].points = rank.points_earned;
+            acc[rank.player_id].lastD = d;
+          }
+        } else {
+          // 一名参赛单元可能不止两个人（团体赛 4~8 人），故统一走 member_ids。
+          // 老赛事没有 member_ids 字段，membersOf() 会退化成 player1/player2，行为不变。
+          for (const pid of membersOf(rank)) {
+            participants.add(pid);
+            if (acc[pid]) {
+              acc[pid].points = rank.points_earned;
+              acc[pid].lastD = d;
             }
           }
         }
+      }
 
         for (const p of allPlayers) {
           if (!participants.has(p.id) && acc[p.id].lastD !== null) {
@@ -566,21 +646,23 @@ function computePoints(excludeRoundId) {
       }
 
       const latestRound = rounds[rounds.length - 1];
-      const latestRank = isFree ? calculatePlayerRankings(latestRound.id, lvl) : calculateRoundRankings(latestRound.id, lvl);
+      const latestEd = ev ? editionByRound(latestRound.id) : null;
+      const latestRank = latestEd
+        ? computeEventRanking(latestEd, lvl)
+        : (isFree ? calculatePlayerRankings(latestRound.id, lvl) : calculateRoundRankings(latestRound.id, lvl));
       const latestParticipants = new Set();
       for (const rank of latestRank.rankings) {
         if (isFree) {
           latestParticipants.add(rank.player_id);
         } else {
-          latestParticipants.add(rank.player1_id);
-          if (rank.player2_id) latestParticipants.add(rank.player2_id);
+          for (const pid of membersOf(rank)) latestParticipants.add(pid);
         }
       }
 
       const key = tour.name + '(' + lvl + '级)';
       for (const p of allPlayers) {
         if (acc[p.id].points === 0 && acc[p.id].lastD === null) continue;
-        const rank = latestRank.rankings.find(r => isFree ? r.player_id === p.id : (r.player1_id === p.id || r.player2_id === p.id));
+        const rank = latestRank.rankings.find(r => isFree ? r.player_id === p.id : membersOf(r).includes(p.id));
         if (latestParticipants.has(p.id) && rank) {
           playerPoints[p.id].tournaments[key] = {
             points: acc[p.id].points, edition: latestRound.edition, level: lvl,
@@ -623,6 +705,113 @@ function computeGenderRanks(points) {
   male.forEach((p, idx) => ranks[p.player_id] = idx + 1);
   female.forEach((p, idx) => ranks[p.player_id] = idx + 1);
   return ranks;
+}
+
+// ==================== 年度最高名次（总积分榜按年切片） ====================
+// 选手页「年度最高」用：把「总积分榜」按时间回放，但只在「同一年度内」比较，
+// 取每人本年度排到过的最好名次；对外取「最近一个自己有有效排名的年度」
+// （跨年、还没比赛之前继续显示上一年度成绩，不会突然变「无」）。
+// 名次口径与「积分排名」页完全一致：分男/女各自排序，同性别第 idx+1 名。
+//
+// 【为什么改成年度口径】
+//  生涯口径会把 2024-12 那两场（当时全榜只有 7 个男生有分）的虚高名次永久保留，
+//  只能靠门槛去拦。年度口径下 2024 年度因从未达标而整体失效，虚高名次自然废弃。
+//  代价是数字普遍变差：年度时点是生涯时点的子集，且榜单分母逐年变大。
+//  实测 2026 年度 vs 旧生涯口径：26 人数字变大 / 0 人变小 / 35 人不变。
+//
+// 两道门槛（缺一不可，否则名次虚高）：
+//  1) 只记录「该选手自己积分 > 0」的时点 —— 没上榜就谈不上名次。
+//  2) 榜上有分的人数必须达标才作数（见下）。没有这条，2024-12 ~ 2025-05 这段
+//     （全榜最多 15 个男生有分）会让参赛者人人拿到"年度最高第1名" ——
+//     实测 6 人并列第1、10 人并列第2，毫无区分度。
+//
+// 【门槛怎么定，以及为什么不能拿「全库注册人数」当分母】
+//   need = max(绝对下限, 该性别「截至该时点实际打过比赛的人数」的一半)
+//   - 绝对下限（男17/女14）防止榜单太小时名次自带光环：只看比例不行，
+//     第一场已参赛 7 人 → 一半才 4，7 个人里排第 1 照样算数，等于没门槛。
+//   - 分母用「已参赛人数」而不是「全库人数」：players 表没有注册时间，
+//     且只要往选手库加一批还没打比赛的新人，「全库人数」就会涨 ——
+//     players 加 40 个男的，门槛从 17 顶到 37，而榜上有分的还是 33 人，
+//     从此再也够不到，所有人的最高排名会卡死在旧值。用已参赛人数则不受影响。
+//   - 圈子真的变大（新人也开始打球）时，门槛会自动跟着抬高，含金量不被稀释。
+//   - 门槛不能再收紧：实测「男25/女20」会把真正当过榜首的选手误伤成第2名。
+// 与 honorsCache 同款：全量推导 + 单点缓存 + 写操作失效。
+const CAREER_MIN_RANKED = { male: 17, female: 14 };
+
+let yearBestCache = null;
+
+function computeYearBestRanks() {
+  const rounds = query('SELECT id, tournament_id, edition, date FROM rounds ORDER BY date ASC, id ASC');
+  const tourName = {};
+  for (const t of query('SELECT id, name FROM tournaments')) tourName[t.id] = t.name;
+  const genderOf = {};
+  for (const p of query('SELECT id, gender FROM players')) genderOf[p.id] = p.gender;
+
+  // 每轮有哪些人下场（单打 player2_id 可能为空，双打两人都算）
+  const roundPlayers = {};
+  for (const t of query('SELECT round_id, player1_id, player2_id FROM teams')) {
+    const s = roundPlayers[t.round_id] || (roundPlayers[t.round_id] = []);
+    if (t.player1_id) s.push(t.player1_id);
+    if (t.player2_id) s.push(t.player2_id);
+  }
+  // 新版赛事不写 teams 表（团体赛一个参赛单元有 4~8 人，装不进 player1/player2 两列），
+  // 所以「已参赛人数」的分母要额外把赛事单元成员并进来，否则门槛会算小、名次虚高。
+  for (const m of query(`SELECT ev.round_id AS round_id, m.player_id AS player_id
+                         FROM event_entry_members m
+                         JOIN event_entries e ON e.id = m.entry_id
+                         JOIN events ev ON ev.id = e.event_id
+                         WHERE ev.round_id IS NOT NULL`)) {
+    const s = roundPlayers[m.round_id] || (roundPlayers[m.round_id] = []);
+    s.push(m.player_id);
+  }
+
+  const byYear = {};                                       // year -> { pid -> 该年度最好名次 }
+  const played = { male: new Set(), female: new Set() };   // 累计已参赛选手
+  for (const cut of rounds) {
+    for (const pid of (roundPlayers[cut.id] || [])) {
+      const g = genderOf[pid];
+      if (g === 'male' || g === 'female') played[g].add(pid);
+    }
+
+    const { points } = computePoints(null, cut);
+    const ranks = computeGenderRanks(points);   // 全量参与排名，保证名次跟榜单页对得上
+    const ranked = { male: 0, female: 0 };
+    for (const p of points) if (p.total_points > 0) ranked[p.gender]++;
+
+    const need = {};
+    for (const g of ['male', 'female']) {
+      need[g] = Math.max(CAREER_MIN_RANKED[g], Math.ceil(played[g].size / 2));
+    }
+
+    const yr = cut.date.slice(0, 4);
+    const bag = byYear[yr] || (byYear[yr] = {});
+    for (const p of points) {
+      if (!(p.total_points > 0)) continue;                    // 该时点自己没上榜 → 不记
+      if (ranked[p.gender] < need[p.gender]) continue;         // 榜单太小 → 名次不作数
+      const r = ranks[p.player_id];
+      if (!r) continue;
+      const cur = bag[p.player_id];
+      if (!cur || r < cur.rank) {
+        bag[p.player_id] = {
+          rank: r,
+          date: cut.date,
+          tournament: tourName[cut.tournament_id] || '',
+          edition: cut.edition
+        };
+      }
+    }
+  }
+
+  // 只保留「最近一个自己有有效排名的年度」：按年份升序覆盖，越晚的年度最终胜出。
+  // 于是跨年、还没比赛（或本年度尚未达标 / 自己本年度没参赛）时，
+  // 会自然沿用上一年度的成绩，而不是突然变「无」。
+  const best = {};
+  for (const y of Object.keys(byYear).sort()) {
+    for (const pid of Object.keys(byYear[y])) {
+      best[pid] = { ...byYear[y][pid], year: y };
+    }
+  }
+  return best;
 }
 
 app.get('/api/points/trend', (req, res) => {
@@ -676,7 +865,7 @@ app.get('/api/query/edition/:edition', (req, res) => {
   `, [edition]);
   const result = [];
   for (const round of rounds) {
-    const ranking = calculateRoundRankings(round.id, round.round_level);
+    const ranking = roundRankings(round.id, round.round_level, round.tournament_name);
     const teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
              p1.name as player1_name, p2.name as player2_name
@@ -698,7 +887,7 @@ app.get('/api/query/round/:roundId', (req, res) => {
     WHERE r.id = ?
   `, [req.params.roundId])[0];
   if (!round) return res.status(404).json({ error: '轮次不存在' });
-  const ranking = calculateRoundRankings(round.id, round.level);
+  const ranking = roundRankings(round.id, round.level, round.tournament_name);
   const teams = query(`
     SELECT t.id as team_id, t.player1_id, t.player2_id,
            p1.name as player1_name, p2.name as player2_name
@@ -751,9 +940,9 @@ function computeAllHonors() {
 
   for (const rd of rounds) {
     const isFree = rd.tournament_name === '狗王杯';
-    const { rankings } = isFree
-      ? calculatePlayerRankings(rd.id, rd.level)
-      : calculateRoundRankings(rd.id, rd.level);
+    // 分发器已内置「新赛事走赛事引擎 / 狗王杯走个人排名 / 其余走队伍排名」的判断，
+    // 这里统一调用即可 —— 新赛事的冠亚季会自然出现在荣誉里。
+    const { rankings } = roundRankings(rd.id, rd.level, rd.tournament_name);
     for (const row of rankings) {
       if (row.rank > 3) continue;   // 只关心前三
       const base = {
@@ -772,12 +961,17 @@ function computeAllHonors() {
       if (isFree) {
         push(row.player_id, { ...base, partner_name: null });
       } else {
-        // 双打：奖给队里两个人，互相记为搭档
-        const ids = [row.player1_id, row.player2_id].filter(Boolean);
+        // 奖给参赛单元里的每个人，两人单元互相记为搭档。
+        // 三人及以上（团体赛队伍）没有「搭档」概念，一律留空，不能取「另一个队员」硬凑。
+        const ids = membersOf(row);
         for (const pid of ids) {
-          const other = ids.find(x => x !== pid);
-          const op = other ? query('SELECT name, real_name FROM players WHERE id = ?', [other])[0] : null;
-          push(pid, { ...base, partner_name: op ? (op.real_name || op.name) : null });
+          let partnerName = null;
+          if (ids.length === 2) {
+            const other = ids.find(x => x !== pid);
+            const op = other ? query('SELECT name, real_name FROM players WHERE id = ?', [other])[0] : null;
+            partnerName = op ? (op.real_name || op.name) : null;
+          }
+          push(pid, { ...base, partner_name: partnerName });
         }
       }
     }
@@ -846,27 +1040,30 @@ app.get('/api/player/:name', (req, res) => {
 
   const roundIds = [...new Set([
     ...query('SELECT DISTINCT round_id FROM teams WHERE player1_id = ?', [player.id]).map(r => r.round_id),
-    ...query('SELECT DISTINCT round_id FROM teams WHERE player2_id = ?', [player.id]).map(r => r.round_id)
+    ...query('SELECT DISTINCT round_id FROM teams WHERE player2_id = ?', [player.id]).map(r => r.round_id),
+    // 新版赛事：选手是通过参赛单元成员表挂上来的，不在 teams 里。
+    // 漏掉这一段的话，新赛事会进总积分榜，却不进这位选手的「比赛记录」，两处数字打架。
+    ...query(`SELECT DISTINCT ed.round_id AS round_id
+              FROM event_entry_members m
+              JOIN event_entries e ON e.id = m.entry_id
+              JOIN event_editions ed ON ed.id = e.edition_id
+              WHERE m.player_id = ? AND ed.round_id IS NOT NULL`, [player.id]).map(r => r.round_id)
   ])];
 
   let totalWins = 0, totalMatches = 0;
-  let bestRank = Infinity;
   const pointsHistory = [];
 
   for (const rid of roundIds) {
     const round = query('SELECT r.*, t.name as tournament_name FROM rounds r JOIN tournaments t ON r.tournament_id = t.id WHERE r.id = ?', [rid])[0];
     if (!round) continue;
     const isFree = round.tournament_name === '狗王杯';
-    const { rankings } = isFree
-      ? calculatePlayerRankings(rid, round.level)
-      : calculateRoundRankings(rid, round.level);
+    const { rankings } = roundRankings(rid, round.level, round.tournament_name);
     const playerRank = isFree
       ? rankings.find(r => r.player_id === player.id)
-      : rankings.find(r => r.player1_id === player.id || r.player2_id === player.id);
+      : rankings.find(r => membersOf(r).includes(player.id));
     if (playerRank) {
       totalWins += playerRank.wins;
       totalMatches += playerRank.wins + playerRank.losses;
-      if (playerRank.rank < bestRank) bestRank = playerRank.rank;
       pointsHistory.push({
         tournament: round.tournament_name, edition: round.edition, round: round.round_number, date: round.date,
         level: round.level, rank: playerRank.rank, wins: playerRank.wins, losses: playerRank.losses,
@@ -897,12 +1094,20 @@ app.get('/api/player/:name', (req, res) => {
     }
   }
 
+  // 年度最高名次：总积分榜按年切片，取「最近一个自己有有效排名的年度」的最好名次
+  if (!yearBestCache) yearBestCache = computeYearBestRanks();
+  const yearBest = yearBestCache[player.id] || null;
+
   res.json({
     player: { ...player, partners, rivals },
     stats: {
       total_matches: totalMatches, total_wins: totalWins,
       win_rate: totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0,
-      best_rank: bestRank === Infinity ? null : bestRank
+      year_best_rank: yearBest ? yearBest.rank : null,
+      year_best_year: yearBest ? yearBest.year : null,
+      year_best_date: yearBest ? yearBest.date : null,
+      year_best_tournament: yearBest ? yearBest.tournament : null,
+      year_best_edition: yearBest ? yearBest.edition : null
     },
     points_history: pointsHistory
   });
@@ -1075,7 +1280,7 @@ app.get('/api/query/rounds', (req, res) => {
 
   const rounds = query(sql, params);
   for (const round of rounds) {
-    const ranking = round.tournament_name === '狗王杯' ? calculatePlayerRankings(round.id, round.round_level) : calculateRoundRankings(round.id, round.round_level);
+    const ranking = roundRankings(round.id, round.round_level, round.tournament_name);
     round.ranking = ranking;
     round.teams = query(`
       SELECT t.id as team_id, t.player1_id, t.player2_id,
@@ -1101,6 +1306,1299 @@ app.get('/api/query/rounds', (req, res) => {
     `, [round.id]);
   }
   res.json(rounds);
+});
+
+// ==================== 创建赛事（新版赛事引擎） ====================
+//
+// 【两层结构：赛事定义 vs 届次】
+//   events          = 赛事定义，只描述「赛制」：类型（单项/团体）、赛制、局制、团体项目与
+//                     出场顺序、小组配置、季军赛。和老 tournaments 一样可以办很多届，
+//                     本身不带日期、级别、参赛名单。
+//   event_editions  = 某一届。日期、级别、参赛单元、对阵、比分全在这一层；
+//                     edition.round_id 是镜像到 rounds 的行 —— 积分 / 荣誉 / 选手资料页都认它。
+//
+// 统一模型：届(edition) → 对抗(tie) → 单项(tie_item) → 局(tie_game)
+//   · 单项赛：一个 tie 就是一场比赛，挂 1 个 tie_item，按局制逐局录分。
+//   · 团体赛：一个 tie 是一场团体对抗，挂 N 个 tie_item（管理员勾选的男单/女单/男双/女双/混双）。
+// 一套录入 UI / 排名计算 / 净胜局净胜分通吃两种类型 —— 少一条分支就少一类 bug。
+//
+// 【为什么新赛事要镜像 tournaments + rounds】
+//   赛事查询、积分排名、荣誉、选手资料页全部是老代码，它们认的是 tournaments/rounds/teams。
+//   要让新赛事「地位同等」，最稳的做法不是再写一套页面，而是让新赛事也有一行 tournaments、
+//   每一届各有一行 rounds，再让「排名分发器」把这些轮次的名次交给赛事引擎算（见 roundRankings）。
+//   于是积分/荣誉/资料页一行都不用改，口径也不会分叉。
+
+const TEAM_ITEM_DEFS = [
+  { code: 'ms', name: '男单', size: 1, gender: 'male' },
+  { code: 'ws', name: '女单', size: 1, gender: 'female' },
+  { code: 'md', name: '男双', size: 2, gender: 'male' },
+  { code: 'wd', name: '女双', size: 2, gender: 'female' },
+  { code: 'xd', name: '混双', size: 2, gender: 'mixed' }
+];
+const TEAM_ITEM_MAP = Object.fromEntries(TEAM_ITEM_DEFS.map(d => [d.code, d]));
+
+// 赛制三选一。rr = 单循环（只循环不淘汰，小组数可配，1 组就是全员大循环）
+const EVENT_FORMATS = [
+  { code: 'rr', name: '单循环赛', hasGroup: true },
+  { code: 'ko', name: '淘汰赛', hasGroup: false },
+  { code: 'group_ko', name: '小组赛+淘汰赛', hasGroup: true }
+];
+const EVENT_FORMAT_MAP = Object.fromEntries(EVENT_FORMATS.map(f => [f.code, f]));
+const eventFormatLabel = f => (EVENT_FORMAT_MAP[f] || { name: f }).name;
+const formatHasGroup = f => !!(EVENT_FORMAT_MAP[f] || EVENT_FORMAT_MAP.rr).hasGroup;
+
+// 种子排序依据。entry = 按录入顺序（原行为）；points = 按参赛单元成员的总积分之和降序。
+// 种子只影响「蛇形分组的先后」和「固定交叉时的落位」，不影响任何比分计算。
+const SEED_BY_DEFS = [{ code: 'entry', name: '按录入顺序' }, { code: 'points', name: '按总积分（种子）' }];
+const SEED_BY_MAP = Object.fromEntries(SEED_BY_DEFS.map(d => [d.code, d]));
+const seedByLabel = s => (SEED_BY_MAP[s] || SEED_BY_DEFS[0]).name;
+
+// 分组方式。snake = 按种子蛇形自动分；manual = 管理员在本届设置里手动指定每个单元的组号。
+const GROUP_MODE_DEFS = [{ code: 'snake', name: '自动蛇形分组' }, { code: 'manual', name: '手动指定分组' }];
+const GROUP_MODE_MAP = Object.fromEntries(GROUP_MODE_DEFS.map(d => [d.code, d]));
+const groupModeLabel = s => (GROUP_MODE_MAP[s] || GROUP_MODE_DEFS[0]).name;
+
+// 淘汰赛对阵方式。
+//   seed         标准种子位固定交叉：A1 打 B2、B1 打 A2（原行为，最强与最弱分在同一半区）
+//   random       随机抽签：出线者打乱后随机落位，可能同组相遇
+//   random_avoid 随机抽签 + 首轮强制回避同组（同组出线的两人不会在首轮碰面）
+const KO_MODE_DEFS = [
+  { code: 'seed', name: '固定交叉（种子位）' },
+  { code: 'random', name: '随机抽签' },
+  { code: 'random_avoid', name: '随机抽签 + 首轮回避同组' }
+];
+const KO_MODE_MAP = Object.fromEntries(KO_MODE_DEFS.map(d => [d.code, d]));
+const koModeLabel = s => (KO_MODE_MAP[s] || KO_MODE_DEFS[0]).name;
+
+// 局制：1 = 一局定胜负，3 = 三局两胜
+const eventBestOfLabel = n => (parseInt(n) === 1 ? '一局定胜负' : '三局两胜');
+// 一个单项要赢几局才算拿下：1 局制赢 1 局，3 局制赢 2 局
+function gameNeedOf(event) { return Math.floor((event.best_of || 3) / 2) + 1; }
+
+let eventEditionRoundMap = null;   // round_id -> edition（每一届各有一行 rounds）
+let eventTourneyMap = null;        // tournament_id -> event
+
+function editionByRound(roundId) {
+  if (!eventEditionRoundMap) {
+    eventEditionRoundMap = {};
+    for (const e of query('SELECT * FROM event_editions WHERE round_id IS NOT NULL')) eventEditionRoundMap[String(e.round_id)] = e;
+  }
+  return eventEditionRoundMap[String(roundId)] || null;
+}
+function eventByTournamentId(tid) {
+  if (!eventTourneyMap) {
+    eventTourneyMap = {};
+    for (const e of query('SELECT * FROM events WHERE tournament_id IS NOT NULL')) eventTourneyMap[String(e.tournament_id)] = e;
+  }
+  return eventTourneyMap[String(tid)] || null;
+}
+
+// sql.js 没有 lastInsertRowid 返回值，只能再查一次
+function lastInsertId() {
+  const r = db.exec('SELECT last_insert_rowid()');
+  return r.length && r[0].values.length ? r[0].values[0][0] : null;
+}
+
+// 老库里可能有 format='group'（早期叫「仅小组赛」），统一折算成 rr，后面就不用到处兼容了
+function eventRow(id) {
+  const e = query('SELECT * FROM events WHERE id = ?', [id])[0] || null;
+  if (e && e.format === 'group') e.format = 'rr';
+  return e;
+}
+function editionRow(id) { return query('SELECT * FROM event_editions WHERE id = ?', [id])[0] || null; }
+
+function koMaxRound(editionId) {
+  const r = query("SELECT MAX(ko_round) AS m FROM event_ties WHERE edition_id = ? AND stage = 'ko'", [editionId])[0];
+  return r && r.m ? r.m : 0;
+}
+
+// 届次 + 赛事定义 + 局制阈值。引擎里几乎每个函数都要这三样，一次取齐。
+function editionCtx(editionId) {
+  const ed = editionRow(editionId);
+  if (!ed) return null;
+  const event = eventRow(ed.event_id);
+  if (!event) return null;
+  return { ed, event, gameNeed: gameNeedOf(event) };
+}
+
+// 把一届赛事整个读进内存算一遍。规模很小（几十个单元、上百场对抗），
+// 一次全量读 + 内存推导比来回查库清晰得多，也好测。
+function loadEventGraph(editionId) {
+  const ed = editionRow(editionId);
+  const eventId = ed ? ed.event_id : 0;
+  const items = query('SELECT * FROM event_items WHERE event_id = ? ORDER BY seq, id', [eventId]);
+  const entries = query('SELECT * FROM event_entries WHERE edition_id = ? ORDER BY seq, id', [editionId]);
+  const ties = query('SELECT * FROM event_ties WHERE edition_id = ? ORDER BY stage, ko_round, slot, seq, id', [editionId]);
+  const tieItems = query(`SELECT ti.* FROM event_tie_items ti
+                          JOIN event_ties t ON t.id = ti.tie_id
+                          WHERE t.edition_id = ? ORDER BY ti.tie_id, ti.seq, ti.id`, [editionId]);
+  const games = query(`SELECT g.* FROM event_tie_games g
+                       JOIN event_tie_items ti ON ti.id = g.tie_item_id
+                       JOIN event_ties t ON t.id = ti.tie_id
+                       WHERE t.edition_id = ? ORDER BY g.tie_item_id, g.game_no`, [editionId]);
+
+  const gamesByItem = {}, itemsByTie = {};
+  for (const g of games) (gamesByItem[g.tie_item_id] || (gamesByItem[g.tie_item_id] = [])).push(g);
+  for (const it of tieItems) (itemsByTie[it.tie_id] || (itemsByTie[it.tie_id] = [])).push(it);
+
+  const membersMap = {};
+  for (const r of query(`SELECT m.entry_id, m.player_id FROM event_entry_members m
+                         JOIN event_entries e ON e.id = m.entry_id
+                         WHERE e.edition_id = ? ORDER BY m.entry_id, m.seq, m.id`, [editionId])) {
+    (membersMap[r.entry_id] || (membersMap[r.entry_id] = [])).push(r.player_id);
+  }
+
+  const entryById = {};
+  for (const e of entries) entryById[e.id] = e;
+  return { items, entries, ties, tieItems, gamesByItem, itemsByTie, membersMap, entryById };
+}
+
+// 一场对抗的完整结果。大场 need = ⌊N/2⌋+1（N 项多数胜），单项 gameNeed 来自赛事局制。
+// 关键点：一旦一方先赢够 need，后面还没打的单项一律记为「未进行」（side = -1），
+// 且它们的局分不再计入净胜局/净胜分 —— 否则 3:0 领先时再补几场「垃圾局」会污染小分。
+function tieOutcome(graph, tie, gameNeed) {
+  const list = graph.itemsByTie[tie.id] || [];
+  const need = Math.floor(list.length / 2) + 1;
+  const gn = gameNeed || 2;
+  let i1 = 0, i2 = 0, g1 = 0, g2 = 0, p1 = 0, p2 = 0, stopped = false;
+  const perItem = [];
+  for (const it of list) {
+    if (stopped) {
+      perItem.push({ item_id: it.id, seq: it.seq, code: it.code, name: it.name, side: -1, w1: 0, w2: 0, skipped: true });
+      continue;
+    }
+    const gs = graph.gamesByItem[it.id] || [];
+    let w1 = 0, w2 = 0;
+    for (const g of gs) {
+      if (g.s1 > g.s2) w1++; else if (g.s2 > g.s1) w2++;
+      p1 += g.s1; p2 += g.s2;
+    }
+    g1 += w1; g2 += w2;
+    let side = 0;
+    if (w1 >= gn) side = 1; else if (w2 >= gn) side = 2;
+    if (side === 1) i1++; else if (side === 2) i2++;
+    perItem.push({ item_id: it.id, seq: it.seq, code: it.code, name: it.name, side, w1, w2, skipped: false });
+    if (i1 >= need || i2 >= need) stopped = true;
+  }
+  let winner = 0;
+  if (i1 >= need) winner = 1; else if (i2 >= need) winner = 2;
+  return { i1, i2, g1, g2, p1, p2, need, perItem, winner, decided: !!winner };
+}
+
+// 某个参赛单元在这一届里的战绩（小组赛 + 淘汰赛一起算）
+function tallyForEntry(graph, entryId, gameNeed) {
+  let wins = 0, losses = 0, gw = 0, gl = 0, pf = 0, pa = 0;
+  for (const t of graph.ties) {
+    if (t.side1_entry_id !== entryId && t.side2_entry_id !== entryId) continue;
+    if (!t.side1_entry_id || !t.side2_entry_id) continue;   // 轮空不计入战绩
+    const o = tieOutcome(graph, t, gameNeed);
+    const is1 = t.side1_entry_id === entryId;
+    gw += is1 ? o.g1 : o.g2;
+    gl += is1 ? o.g2 : o.g1;
+    pf += is1 ? o.p1 : o.p2;
+    pa += is1 ? o.p2 : o.p1;
+    if (o.winner) {
+      const w = o.winner === 1 ? t.side1_entry_id : t.side2_entry_id;
+      if (w === entryId) wins++; else losses++;
+    }
+  }
+  return { wins, losses, games_won: gw, games_lost: gl, net_games: gw - gl, net_points: pf - pa, pts_for: pf, pts_against: pa };
+}
+
+// 参赛单元的种子值 = 成员的总积分之和（口径由和哥定：单人赛就是该选手积分，
+// 双打 / 团体取成员之和）。只用于「排序」与「给管理员看」，不参与任何比分计算。
+function entrySeedMap(graph) {
+  const pts = {};
+  for (const row of computePoints().points) pts[row.player_id] = row.total_points || 0;
+  const map = {};
+  for (const e of graph.entries) {
+    const members = graph.membersMap[e.id] || [];
+    let s = 0;
+    for (const pid of members) s += (pts[pid] || 0);
+    map[e.id] = s;
+  }
+  return map;
+}
+
+// 按种子值降序排名（同分按录入顺序，保证稳定可预期）
+function seedRanks(graph, seedMap) {
+  const arr = graph.entries.slice().sort((a, b) => {
+    const d = (seedMap[b.id] || 0) - (seedMap[a.id] || 0);
+    if (d) return d;
+    return (a.seq != null ? a.seq : a.id) - (b.seq != null ? b.seq : b.id);
+  });
+  const rank = {};
+  arr.forEach((e, i) => { rank[e.id] = i + 1; });
+  return rank;
+}
+
+// 种子顺序（entry id 数组）：entry = 录入顺序；points = 总积分降序。
+// 蛇形分组与固定交叉都基于它 —— 换依据只改这一处。
+function seedOrder2(graph, seedBy) {
+  const arr = graph.entries.slice();
+  if (seedBy === 'points') {
+    const sm = entrySeedMap(graph);
+    arr.sort((a, b) => {
+      const d = (sm[b.id] || 0) - (sm[a.id] || 0);
+      if (d) return d;
+      return (a.seq != null ? a.seq : a.id) - (b.seq != null ? b.seq : b.id);
+    });
+  } else {
+    arr.sort((a, b) => (a.seq != null ? a.seq : a.id) - (b.seq != null ? b.seq : b.id));
+  }
+  return arr.map(e => e.id);
+}
+
+// 小组积分榜。先后手规则（产品定义，别改）：
+//   大场胜场 > 净胜大场 > 净胜局 > 净胜分 > 交手记录
+// 前四项全等的区间内，再用「区间内循环赛小分」重排一次（交手记录）。
+function groupStandings(graph, groupNo, gameNeed) {
+  const entries = graph.entries.filter(e => e.group_no === groupNo);
+  const s = {};
+  for (const e of entries) {
+    s[e.id] = {
+      entry_id: e.id, label: e.label, group_no: groupNo,
+      tie_wins: 0, tie_losses: 0, item_wins: 0, item_losses: 0,
+      games_won: 0, games_lost: 0, pts_for: 0, pts_against: 0
+    };
+  }
+  const h2h = {};
+  for (const t of graph.ties) {
+    if (t.stage !== 'group' || t.group_no !== groupNo) continue;
+    const A = s[t.side1_entry_id], B = s[t.side2_entry_id];
+    if (!A || !B) continue;
+    const o = tieOutcome(graph, t, gameNeed);
+    A.item_wins += o.i1; B.item_losses += o.i1;
+    B.item_wins += o.i2; A.item_losses += o.i2;
+    A.games_won += o.g1; A.games_lost += o.g2;
+    B.games_won += o.g2; B.games_lost += o.g1;
+    A.pts_for += o.p1; A.pts_against += o.p2;
+    B.pts_for += o.p2; B.pts_against += o.p1;
+    if (o.winner) {
+      const w = o.winner === 1 ? t.side1_entry_id : t.side2_entry_id;
+      const l = o.winner === 1 ? t.side2_entry_id : t.side1_entry_id;
+      s[w].tie_wins++; s[l].tie_losses++;
+      h2h[w + '|' + l] = true;
+    }
+  }
+  const arr = Object.values(s);
+  for (const r of arr) {
+    r.net_ties = r.tie_wins - r.tie_losses;
+    r.net_games = r.games_won - r.games_lost;
+    r.net_points = r.pts_for - r.pts_against;
+    r.played = r.tie_wins + r.tie_losses;
+  }
+  const keyOf = r => [r.tie_wins, r.net_ties, r.net_games, r.net_points].join('|');
+  arr.sort((a, b) => (b.tie_wins - a.tie_wins) || (b.net_ties - a.net_ties)
+    || (b.net_games - a.net_games) || (b.net_points - a.net_points));
+  let i = 0;
+  while (i < arr.length) {
+    let j = i;
+    while (j + 1 < arr.length && keyOf(arr[i]) === keyOf(arr[j + 1])) j++;
+    if (j > i) {
+      const part = arr.slice(i, j + 1);
+      const sc = {};
+      for (const a of part) sc[a.entry_id] = 0;
+      for (const a of part) for (const b of part) if (a !== b && h2h[a.entry_id + '|' + b.entry_id]) sc[a.entry_id]++;
+      part.sort((a, b) => sc[b.entry_id] - sc[a.entry_id]);
+      for (let k = 0; k < part.length; k++) arr[i + k] = part[k];
+    }
+    i = j + 1;
+  }
+  arr.forEach((r, idx) => r.rank = idx + 1);
+  return arr;
+}
+
+// 淘汰赛名次：冠军 → 亚军 →（季军赛赢家/输家，否则半决赛两个负者）→ 按被淘汰轮次从晚到早
+function koOrder(graph, entrySeq) {
+  const koTies = graph.ties.filter(t => t.stage === 'ko');
+  if (!koTies.length) return null;
+  const maxRound = Math.max(...koTies.map(t => t.ko_round));
+  const finalTie = koTies.find(t => t.ko_round === maxRound && t.slot === 0) || koTies.find(t => t.ko_round === maxRound);
+
+  const elim = {};
+  for (const t of koTies) {
+    if (!t.winner_entry_id || !t.side1_entry_id || !t.side2_entry_id) continue;
+    elim[t.winner_entry_id === t.side1_entry_id ? t.side2_entry_id : t.side1_entry_id] = t.ko_round;
+  }
+
+  const order = [];
+  const push = id => { if (id && !order.includes(id)) order.push(id); };
+
+  const fw = finalTie ? finalTie.winner_entry_id : null;
+  const fl = finalTie && finalTie.side1_entry_id && finalTie.side2_entry_id
+    ? (fw === finalTie.side1_entry_id ? finalTie.side2_entry_id : finalTie.side1_entry_id) : null;
+  push(fw); push(fl);
+
+  const tp = graph.ties.find(t => t.stage === 'third' && t.winner_entry_id);
+  if (tp) {
+    push(tp.winner_entry_id);
+    push(tp.winner_entry_id === tp.side1_entry_id ? tp.side2_entry_id : tp.side1_entry_id);
+  }
+
+  Object.keys(elim).map(Number)
+    .filter(id => !order.includes(id))
+    .sort((a, b) => (elim[b] - elim[a]) || ((entrySeq[a] || 0) - (entrySeq[b] || 0)))
+    .forEach(push);
+  return order;
+}
+
+// 本届最终名次（1..n）。这就是喂给积分系统的排序。
+function finalOrder(event, graph, gameNeed) {
+  const entrySeq = {};
+  graph.entries.forEach((e, i) => { entrySeq[e.id] = e.seq != null ? e.seq : i; });
+  const groupNos = [...new Set(graph.entries.filter(e => e.group_no > 0).map(e => e.group_no))].sort((a, b) => a - b);
+  const tables = {};
+  for (const g of groupNos) tables[g] = groupStandings(graph, g, gameNeed);
+
+  const order = [], seen = new Set();
+  const add = id => { if (id && !seen.has(id)) { seen.add(id); order.push(id); } };
+  const metricDesc = (a, b) => (b.tie_wins - a.tie_wins) || (b.net_ties - a.net_ties)
+    || (b.net_games - a.net_games) || (b.net_points - a.net_points);
+
+  const ko = koOrder(graph, entrySeq);
+  if (ko) {
+    for (const id of ko) add(id);
+    if (event.format === 'group_ko') {
+      // 没出线的：先各组第 (出线名额+1) 名，再下一档……同档内按四项指标降序
+      const adv = event.advance_per_group || 0;
+      const rest = [];
+      for (const g of groupNos) for (const r of tables[g]) if (r.rank > adv) rest.push(r);
+      rest.sort((a, b) => (a.rank - b.rank) || metricDesc(a, b));
+      for (const r of rest) add(r.entry_id);
+    }
+  } else {
+    // 单循环：各组同名次合并 —— 所有第 1 名在前，再所有第 2 名……
+    const all = [];
+    for (const g of groupNos) for (const r of tables[g]) all.push(r);
+    all.sort((a, b) => (a.rank - b.rank) || metricDesc(a, b));
+    for (const r of all) add(r.entry_id);
+  }
+  // 兜底：还没进榜的（未分组 / 签表未生成 / 被删过）按录入顺序补齐，
+  // 保证「名次表长度 = 参赛单元数」，否则积分分母 d 会算错。
+  for (const e of graph.entries) add(e.id);
+  return order.map(id => graph.entryById[id]).filter(Boolean);
+}
+
+// 这一届是否已经有「已决出的对抗」。
+// 没有任何赛果时必须不产出名次：一建好届次就有镜像 rounds 行，
+// 如果照样按录入顺序排 1..n，一场没打就会把冠亚季直接发进荣誉体系、并进积分榜。
+// （老模型里空轮次不可达，这是赛事引擎独有的新情况。）
+function eventHasResults(graph) {
+  return graph.ties.some(t => t.winner_entry_id);
+}
+
+// 赛事引擎的排名，形态与 calculateRoundRankings 一致（rankings / d / teamCount），
+// 让积分、荣誉、选手资料页的既有代码可以直接吃下去。传进来的是「届」。
+function computeEventRanking(ed, level) {
+  const event = eventRow(ed.event_id);
+  if (!event) return { rankings: [], d: 0, teamCount: 0, event_id: 0, kind: '' };
+  const gameNeed = gameNeedOf(event);
+  const graph = loadEventGraph(ed.id);
+  if (!eventHasResults(graph)) return { rankings: [], d: 0, teamCount: 0, event_id: event.id, kind: event.kind };
+  const ordered = finalOrder(event, graph, gameNeed);
+  const n = ordered.length;
+  const lvl = level || ed.level || 1000;
+  const d = n ? Math.round(lvl / n) : 0;
+  const rankings = ordered.map((e, i) => {
+    const members = graph.membersMap[e.id] || [];
+    const t = tallyForEntry(graph, e.id, gameNeed);
+    return {
+      rank: i + 1,
+      entry_id: e.id,
+      label: e.label,
+      member_ids: members,
+      // player1/player2 只是给老代码兜底用；真实成员一律看 member_ids
+      player1_id: members[0] || null,
+      player2_id: members[1] || null,
+      wins: t.wins, losses: t.losses,
+      games_won: t.games_won, games_lost: t.games_lost,
+      net_points: t.net_points,
+      points_earned: Math.max(0, lvl - d * i)
+    };
+  });
+  return { rankings, d, teamCount: n, event_id: event.id, kind: event.kind };
+}
+
+// ---------- 赛事引擎内部写入（全部按届作用域） ----------
+
+function clearStage(editionId, stage) {
+  query(`DELETE FROM event_tie_games WHERE tie_item_id IN
+         (SELECT ti.id FROM event_tie_items ti JOIN event_ties t ON t.id = ti.tie_id
+          WHERE t.edition_id = ? AND t.stage = ?)`, [editionId, stage]);
+  query(`DELETE FROM event_tie_items WHERE tie_id IN
+         (SELECT id FROM event_ties WHERE edition_id = ? AND stage = ?)`, [editionId, stage]);
+  query('DELETE FROM event_ties WHERE edition_id = ? AND stage = ?', [editionId, stage]);
+}
+
+function createTie(event, editionId, spec) {
+  query(`INSERT INTO event_ties (event_id, edition_id, stage, group_no, ko_round, slot, side1_entry_id, side2_entry_id, winner_entry_id, state, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?)`,
+    [event.id, editionId, spec.stage, spec.group_no || 0, spec.ko_round || 0, spec.slot || 0,
+     spec.side1 || null, spec.side2 || null, spec.seq || 0]);
+  const tieId = lastInsertId();
+  const items = event.kind === 'team'
+    ? query('SELECT code, name FROM event_items WHERE event_id = ? ORDER BY seq, id', [event.id])
+    : [{ code: '', name: '比赛' }];
+  items.forEach((it, i) => {
+    query(`INSERT INTO event_tie_items (tie_id, code, name, seq, side1_players, side2_players, winner_side)
+           VALUES (?, ?, ?, ?, '', '', 0)`, [tieId, it.code || '', it.name || '', i + 1]);
+  });
+  return tieId;
+}
+
+// 清空一场对抗的赛果（对阵变了 / 重新生成时用）。保留 sides，不动 stage。
+function resetTie(tieId) {
+  query("UPDATE event_ties SET winner_entry_id = NULL, state = 'pending' WHERE id = ?", [tieId]);
+  query("UPDATE event_tie_items SET winner_side = 0, side1_players = '', side2_players = '' WHERE tie_id = ?", [tieId]);
+  query('DELETE FROM event_tie_games WHERE tie_item_id IN (SELECT id FROM event_tie_items WHERE tie_id = ?)', [tieId]);
+}
+
+// 胜者进入下一轮。若下一轮的这一侧原本是别人，说明树状结构变了：
+// 把那一场连同比分一起作废，并继续往下传空，否则会留下「比分属于已被淘汰的人」的脏数据。
+function propagate(tie, winnerEntry) {
+  if (tie.stage !== 'ko') return;
+  const maxRound = koMaxRound(tie.edition_id);
+  if (tie.ko_round >= maxRound) return;
+  const nextSlot = Math.floor(tie.slot / 2);
+  const nextSide = (tie.slot % 2) + 1;
+  const nt = query(`SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'ko' AND ko_round = ? AND slot = ?`,
+    [tie.edition_id, tie.ko_round + 1, nextSlot])[0];
+  if (!nt) return;
+  const col = nextSide === 1 ? 'side1_entry_id' : 'side2_entry_id';
+  if (nt[col] === winnerEntry) return;
+  query(`UPDATE event_ties SET ${col} = ? WHERE id = ?`, [winnerEntry, nt.id]);
+  resetTie(nt.id);
+  propagate(query('SELECT * FROM event_ties WHERE id = ?', [nt.id])[0], null);
+}
+
+// 轮空自动晋级：签表大小是 2 的幂，出线数不足时首轮会出现单边，直接送到下一轮
+function autoAdvanceByes(editionId) {
+  const R = koMaxRound(editionId);
+  for (let r = 1; r <= R; r++) {
+    const ties = query("SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'ko' AND ko_round = ? ORDER BY slot", [editionId, r]);
+    for (const t of ties) {
+      if (t.side1_entry_id && !t.side2_entry_id) {
+        query("UPDATE event_ties SET winner_entry_id = ?, state = 'done' WHERE id = ?", [t.side1_entry_id, t.id]);
+        propagate(t, t.side1_entry_id);
+      } else if (!t.side1_entry_id && t.side2_entry_id) {
+        query("UPDATE event_ties SET winner_entry_id = ?, state = 'done' WHERE id = ?", [t.side2_entry_id, t.id]);
+        propagate(t, t.side2_entry_id);
+      }
+    }
+  }
+}
+
+// 季军赛的两个名额来自半决赛负者。半决赛结果一变就要重填，否则季军赛会挂着旧人。
+function fillThirdPlace(editionId, event) {
+  if (!event || !event.third_place) return;
+  const R = koMaxRound(editionId);
+  if (R < 2) return;
+  const tp = query("SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'third' LIMIT 1", [editionId])[0];
+  if (!tp) return;
+  const semis = query("SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'ko' AND ko_round = ? ORDER BY slot", [editionId, R - 1]);
+  const losers = semis.map(t => {
+    if (!t.winner_entry_id || !t.side1_entry_id || !t.side2_entry_id) return null;
+    return t.winner_entry_id === t.side1_entry_id ? t.side2_entry_id : t.side1_entry_id;
+  });
+  const s1 = losers[0] || null, s2 = losers[1] || null;
+  if (tp.side1_entry_id === s1 && tp.side2_entry_id === s2) return;
+  query('UPDATE event_ties SET side1_entry_id = ?, side2_entry_id = ? WHERE id = ?', [s1, s2, tp.id]);
+  resetTie(tp.id);
+}
+
+// 写库之后重算一场对抗：单项胜负 → 提前终止 → 大场胜负 → 向下传递
+function settleTie(editionId, tieId, gameNeed) {
+  const tie = query('SELECT * FROM event_ties WHERE id = ?', [tieId])[0];
+  if (!tie) return;
+  const items = query('SELECT * FROM event_tie_items WHERE tie_id = ? ORDER BY seq, id', [tieId]);
+  const need = Math.floor(items.length / 2) + 1;
+  const gn = gameNeed || 2;
+  let i1 = 0, i2 = 0, stopped = false;
+  for (const it of items) {
+    if (stopped) {
+      query('UPDATE event_tie_items SET winner_side = -1 WHERE id = ?', [it.id]);
+      query('DELETE FROM event_tie_games WHERE tie_item_id = ?', [it.id]);
+      continue;
+    }
+    const gs = query('SELECT s1, s2 FROM event_tie_games WHERE tie_item_id = ? ORDER BY game_no', [it.id]);
+    let w1 = 0, w2 = 0;
+    for (const g of gs) { if (g.s1 > g.s2) w1++; else if (g.s2 > g.s1) w2++; }
+    let side = 0;
+    if (w1 >= gn) side = 1; else if (w2 >= gn) side = 2;
+    if (side === 1) i1++; else if (side === 2) i2++;
+    query('UPDATE event_tie_items SET winner_side = ? WHERE id = ?', [side, it.id]);
+    if (i1 >= need || i2 >= need) stopped = true;
+  }
+  let winnerEntry = null;
+  if (i1 >= need) winnerEntry = tie.side1_entry_id;
+  else if (i2 >= need) winnerEntry = tie.side2_entry_id;
+  query('UPDATE event_ties SET winner_entry_id = ?, state = ? WHERE id = ?', [winnerEntry, winnerEntry ? 'done' : 'pending', tieId]);
+  propagate(query('SELECT * FROM event_ties WHERE id = ?', [tieId])[0], winnerEntry);
+}
+
+function updateEventStatus(editionId) {
+  const rows = query('SELECT state FROM event_ties WHERE edition_id = ?', [editionId]);
+  const allDone = rows.length > 0 && rows.every(r => r.state === 'done');
+  query('UPDATE event_editions SET status = ? WHERE id = ?', [allDone ? 'done' : 'ready', editionId]);
+}
+
+// ---------- 赛事引擎内部校验 ----------
+
+function playerGenderMap() {
+  const m = {};
+  for (const p of query('SELECT id, gender FROM players')) m[p.id] = p.gender;
+  return m;
+}
+
+// 单项排阵校验：人数 + 性别构成 + 不得重复 + 必须来自本队名单。
+// 只校验「已经排了阵」的单项（空 = 还没排，允许）。
+function validateLineup(def, ids, genderOf, teamMembers) {
+  if (!ids.length) return null;
+  if (ids.length !== def.size) return `${def.name}需要 ${def.size} 名选手`;
+  if (new Set(ids).size !== ids.length) return `${def.name}不能重复上同一名选手`;
+  const gs = ids.map(id => genderOf[id]);
+  if (gs.some(g => !g)) return `${def.name}中有选手不存在`;
+  if (def.gender === 'male' && gs.some(g => g !== 'male')) return `${def.name}只能上男选手`;
+  if (def.gender === 'female' && gs.some(g => g !== 'female')) return `${def.name}只能上女选手`;
+  if (def.gender === 'mixed' && !(gs.includes('male') && gs.includes('female'))) return `${def.name}需要 1 男 1 女`;
+  if (teamMembers && teamMembers.length) {
+    for (const id of ids) if (!teamMembers.includes(id)) return `${def.name}的选手必须来自本队名单`;
+  }
+  return null;
+}
+
+function seedOrder(size) {
+  let arr = [1, 2];
+  while (arr.length < size) {
+    const m = arr.length * 2, next = [];
+    for (const s of arr) { next.push(s); next.push(m + 1 - s); }
+    arr = next;
+  }
+  return arr.slice(0, size);
+}
+
+// ---------- REST：赛事定义（只有赛制，没有日期/级别/名单） ----------
+
+function defaultEntryLabel(kind, players, nameOf) {
+  const names = players.map(p => nameOf[p] || ('#' + p));
+  if (kind === 'team') return names.join(' / ');
+  return names.join(' + ');
+}
+
+// 校验并规范化一份参赛名单。建届与改届共用，避免两处规则走偏。
+function normalizeEntries(event, rawEntries) {
+  const genderOf = playerGenderMap();
+  const nameOf = {};
+  for (const p of query('SELECT id, name, real_name FROM players')) nameOf[p.id] = p.real_name || p.name;
+
+  const list = Array.isArray(rawEntries) ? rawEntries : [];
+  if (list.length < 2) return { error: '至少需要 2 个参赛单元' };
+  const out = [];
+  for (const e of list) {
+    const players = (e.players || []).map(Number).filter(Boolean);
+    if (!players.length) return { error: '每个参赛单元至少要选 1 名选手' };
+    for (const pid of players) if (!genderOf[pid]) return { error: '有选手不存在（id ' + pid + '），请刷新选手列表' };
+    if (new Set(players).size !== players.length) return { error: '同一个参赛单元里不能有重复选手' };
+    if (event.kind === 'individual') {
+      if (players.length > 2) return { error: '单项赛每个参赛单元最多 2 名选手（单打 1 名 / 双打 2 名）' };
+    } else if (players.length < 2) {
+      return { error: '团体赛每支队伍至少 2 名队员' };
+    }
+    const label = String(e.label || '').trim() || defaultEntryLabel(event.kind, players, nameOf);
+    out.push({ label, players });
+  }
+  // 同一届里一个人只能代表一个参赛单元
+  const seenPid = {};
+  for (const e of out) for (const pid of e.players) {
+    if (seenPid[pid]) return { error: `选手「${nameOf[pid]}」在本届名单里出现了多次` };
+    seenPid[pid] = true;
+  }
+  const labels = {};
+  for (const e of out) {
+    if (labels[e.label]) return { error: `参赛单元名称重复：${e.label}` };
+    labels[e.label] = true;
+  }
+  return { entries: out, genderOf };
+}
+
+// 赛事类型 → tournaments.type：决定它出现在「积分排名」的哪个性别榜。
+// 名单按届录入，所以每存一次名单就按本届实际阵容重算一次。
+function tournamentTypeFor(event, entries, genderOf) {
+  if (event.kind === 'team') return 'team';
+  if (entries.every(e => e.players.length === 1)) {
+    let male = 0, female = 0;
+    for (const e of entries) (genderOf[e.players[0]] === 'male' ? male++ : female++);
+    return male && !female ? 'singles' : (!male && female ? 'womens_singles' : 'mixed_singles');
+  }
+  let male = 0, female = 0;
+  for (const e of entries) for (const pid of e.players) (genderOf[pid] === 'male' ? male++ : female++);
+  return male && !female ? 'mens_doubles' : (!male && female ? 'womens_doubles' : 'mixed_doubles');
+}
+
+function writeEditionEntries(editionId, eventId, entries) {
+  entries.forEach((en, i) => {
+    query('INSERT INTO event_entries (event_id, edition_id, label, group_no, seq) VALUES (?, ?, ?, 0, ?)', [eventId, editionId, en.label, i + 1]);
+    const eid = lastInsertId();
+    en.players.forEach((pid, k) => query('INSERT INTO event_entry_members (entry_id, player_id, seq) VALUES (?, ?, ?)', [eid, pid, k + 1]));
+  });
+}
+
+app.get('/api/events', (req, res) => {
+  const evs = query('SELECT * FROM events ORDER BY id DESC');
+  const icnt = {};
+  for (const r of query('SELECT event_id, COUNT(*) AS c FROM event_items GROUP BY event_id')) icnt['i' + r.event_id] = r.c;
+  const ecnt = {};
+  for (const r of query('SELECT event_id, COUNT(*) AS c FROM event_editions GROUP BY event_id')) ecnt['d' + r.event_id] = r.c;
+  res.json(evs.map(e => ({
+    id: e.id, name: e.name, kind: e.kind, format: e.format, best_of: e.best_of,
+    icon: e.icon, third_place: e.third_place, group_count: e.group_count,
+    advance_per_group: e.advance_per_group, tournament_id: e.tournament_id,
+    seed_by: e.seed_by, group_mode: e.group_mode, ko_mode: e.ko_mode,
+    item_count: icnt['i' + e.id] || 0,
+    edition_count: ecnt['d' + e.id] || 0
+  })));
+});
+
+// 只建「赛事定义」：赛制层面的一切，不含日期 / 级别 / 参赛名单。
+app.post('/api/events', (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  const kind = b.kind, format = b.format;
+  const bestOf = parseInt(b.best_of) || 3;
+  if (!name) return res.status(400).json({ error: '请填写赛事名称' });
+  if (!['individual', 'team'].includes(kind)) return res.status(400).json({ error: '赛事类型无效' });
+  if (!EVENT_FORMAT_MAP[format]) return res.status(400).json({ error: '赛制无效' });
+  if (![1, 3].includes(bestOf)) return res.status(400).json({ error: '局制无效' });
+
+  let itemCodes = [];
+  if (kind === 'team') {
+    itemCodes = (Array.isArray(b.items) ? b.items : []).filter(c => TEAM_ITEM_MAP[c]);
+    if (!itemCodes.length) return res.status(400).json({ error: '请至少勾选一个团体项目' });
+    if (itemCodes.length % 2 === 0) {
+      // 偶数项会出现 N/2 : N/2 的平局，N 项多数胜必须奇数才成立
+      return res.status(400).json({ error: '团体项目数需为奇数（1 / 3 / 5 项），否则会出现无法分出胜负的平局' });
+    }
+  }
+
+  let gc = 0, apg = 0;
+  if (formatHasGroup(format)) gc = Math.max(1, parseInt(b.group_count) || 1);
+  if (format === 'group_ko') apg = Math.max(1, parseInt(b.advance_per_group) || 1);
+  // 出线名额上限留到建届时按实际队数再卡一次（赛制层不知道会有多少队）
+  const seedBy = SEED_BY_MAP[b.seed_by] ? b.seed_by : 'entry';
+  const groupMode = GROUP_MODE_MAP[b.group_mode] ? b.group_mode : 'snake';
+  const koMode = (format === 'rr') ? 'seed' : (KO_MODE_MAP[b.ko_mode] ? b.ko_mode : 'seed');
+
+  try {
+    let eventId, tournamentId;
+    tx(() => {
+      // 镜像的 tournaments 行：让新赛事在赛事查询 / 积分排名里与老赛事地位同等。
+      // type 先按类型给个中性值，建届录名单时会按本届实际阵容重算。
+      query('INSERT INTO tournaments (name, type, level, icon) VALUES (?, ?, ?, ?)',
+        [name, kind === 'team' ? 'team' : 'mixed_singles', 1000, '']);
+      tournamentId = lastInsertId();
+      query(`INSERT INTO events (name, kind, format, best_of, level, date, icon, third_place, group_count, advance_per_group, seed_by, group_mode, ko_mode, status, tournament_id, created_at)
+             VALUES (?, ?, ?, ?, 1000, '', '', ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+        [name, kind, format, bestOf, b.third_place ? 1 : 0, gc, apg, seedBy, groupMode, koMode, tournamentId, new Date().toISOString()]);
+      eventId = lastInsertId();
+      if (kind === 'team') {
+        itemCodes.forEach((code, i) => {
+          query('INSERT INTO event_items (event_id, code, name, seq) VALUES (?, ?, ?, ?)', [eventId, code, TEAM_ITEM_MAP[code].name, i + 1]);
+        });
+      }
+    });
+    res.json({ id: eventId, tournament_id: tournamentId });
+  } catch (e) {
+    res.status(400).json({ error: /UNIQUE/.test(e.message) ? '已有同名赛事，请换个名称' : e.message });
+  }
+});
+
+// 赛事定义 + 团体项目 + 历届概览
+app.get('/api/events/:id', (req, res) => {
+  const event = eventRow(parseInt(req.params.id));
+  if (!event) return res.status(404).json({ error: '赛事不存在' });
+  const items = query('SELECT * FROM event_items WHERE event_id = ? ORDER BY seq, id', [event.id]);
+  const eds = query('SELECT * FROM event_editions WHERE event_id = ? ORDER BY edition DESC, id DESC', [event.id]);
+  const ecnt = {}, tcnt = {}, dcnt = {};
+  for (const r of query('SELECT edition_id, COUNT(*) AS c FROM event_entries GROUP BY edition_id')) ecnt[r.edition_id] = r.c;
+  for (const r of query('SELECT edition_id, COUNT(*) AS c FROM event_ties GROUP BY edition_id')) tcnt[r.edition_id] = r.c;
+  for (const r of query("SELECT edition_id, COUNT(*) AS c FROM event_ties WHERE state = 'done' GROUP BY edition_id")) dcnt[r.edition_id] = r.c;
+  res.json({
+    event, items,
+    editions: eds.map(e => ({
+      ...e,
+      entry_count: ecnt[e.id] || 0,
+      tie_count: tcnt[e.id] || 0,
+      done_count: dcnt[e.id] || 0
+    }))
+  });
+});
+
+app.delete('/api/events/:id', (req, res) => {
+  const event = eventRow(parseInt(req.params.id));
+  if (!event) return res.status(404).json({ error: '赛事不存在' });
+  tx(() => {
+    for (const ed of query('SELECT * FROM event_editions WHERE event_id = ?', [event.id])) deleteEditionData(ed);
+    query('DELETE FROM event_editions WHERE event_id = ?', [event.id]);
+    query('DELETE FROM event_items WHERE event_id = ?', [event.id]);
+    query('DELETE FROM events WHERE id = ?', [event.id]);
+    // 镜像行一并撤掉，否则积分榜/赛事查询里会留一个空赛事
+    if (event.tournament_id) {
+      for (const r of query('SELECT id FROM rounds WHERE tournament_id = ?', [event.tournament_id])) {
+        query('DELETE FROM matches WHERE round_id = ?', [r.id]);
+        query('DELETE FROM teams WHERE round_id = ?', [r.id]);
+      }
+      query('DELETE FROM rounds WHERE tournament_id = ?', [event.tournament_id]);
+      query('DELETE FROM tournaments WHERE id = ?', [event.tournament_id]);
+    }
+  });
+  res.json({ success: true });
+});
+
+// 改赛制：名称 / 类型 / 赛制 / 局制 / 季军赛 / 小组配置 / 团体项目与顺序
+app.put('/api/events/:id/config', (req, res) => {
+  const event = eventRow(parseInt(req.params.id));
+  if (!event) return res.status(404).json({ error: '赛事不存在' });
+  const b = req.body || {};
+  try {
+    tx(() => {
+      if (b.third_place !== undefined) query('UPDATE events SET third_place = ? WHERE id = ?', [b.third_place ? 1 : 0, event.id]);
+      if (b.name) {
+        query('UPDATE events SET name = ? WHERE id = ?', [String(b.name).trim(), event.id]);
+        if (event.tournament_id) query('UPDATE tournaments SET name = ? WHERE id = ?', [String(b.name).trim(), event.tournament_id]);
+      }
+      if (b.best_of !== undefined) {
+        const bo = parseInt(b.best_of) || 3;
+        if (![1, 3].includes(bo)) throw new Error('局制无效');
+        query('UPDATE events SET best_of = ? WHERE id = ?', [bo, event.id]);
+      }
+      if (b.format !== undefined && EVENT_FORMAT_MAP[b.format]) {
+        query('UPDATE events SET format = ? WHERE id = ?', [b.format, event.id]);
+      }
+      if (b.group_count !== undefined) query('UPDATE events SET group_count = ? WHERE id = ?', [Math.max(1, parseInt(b.group_count) || 1), event.id]);
+      if (b.advance_per_group !== undefined) query('UPDATE events SET advance_per_group = ? WHERE id = ?', [Math.max(1, parseInt(b.advance_per_group) || 1), event.id]);
+      if (b.seed_by !== undefined && SEED_BY_MAP[b.seed_by]) query('UPDATE events SET seed_by = ? WHERE id = ?', [b.seed_by, event.id]);
+      if (b.group_mode !== undefined && GROUP_MODE_MAP[b.group_mode]) query('UPDATE events SET group_mode = ? WHERE id = ?', [b.group_mode, event.id]);
+      if (b.ko_mode !== undefined && KO_MODE_MAP[b.ko_mode]) query('UPDATE events SET ko_mode = ? WHERE id = ?', [b.ko_mode, event.id]);
+      // 项目顺序：只改 seq，不动已有对阵（对阵是按 tie_item 存的，单项按 seq 渲染）
+      if (Array.isArray(b.items) && event.kind === 'team') {
+        const codes = b.items.filter(c => TEAM_ITEM_MAP[c]);
+        const exist = query('SELECT id, code FROM event_items WHERE event_id = ?', [event.id]);
+        const byCode = {};
+        for (const r of exist) byCode[r.code] = r;
+        for (const r of exist) if (!codes.includes(r.code)) query('DELETE FROM event_items WHERE id = ?', [r.id]);
+        codes.forEach((code, i) => {
+          if (byCode[code]) query('UPDATE event_items SET seq = ? WHERE id = ?', [i + 1, byCode[code].id]);
+          else query('INSERT INTO event_items (event_id, code, name, seq) VALUES (?, ?, ?, ?)', [event.id, code, TEAM_ITEM_MAP[code].name, i + 1]);
+        });
+      }
+    });
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------- REST：届次（日期 / 级别 / 参赛名单 / 对阵 / 比分） ----------
+
+// 建一届。同名赛事同届数只能有一个（与老 rounds 的口径一致）。
+app.post('/api/events/:id/editions', (req, res) => {
+  const event = eventRow(parseInt(req.params.id));
+  if (!event) return res.status(404).json({ error: '赛事不存在' });
+  const b = req.body || {};
+  const editionNo = Math.max(1, parseInt(b.edition) || 1);
+  if (query('SELECT id FROM event_editions WHERE event_id = ? AND edition = ?', [event.id, editionNo]).length) {
+    return res.status(400).json({ error: `第 ${editionNo} 届已存在` });
+  }
+  const norm = normalizeEntries(event, b.entries);
+  if (norm.error) return res.status(400).json({ error: norm.error });
+  const entries = norm.entries;
+
+  const date = b.date || new Date().toISOString().slice(0, 10);
+  const level = parseInt(b.level) || 1000;
+  if (event.format === 'group_ko') {
+    const G = Math.max(1, event.group_count || 1);
+    const apg = Math.max(1, event.advance_per_group || 1);
+    if (entries.length < G * 2) return res.status(400).json({ error: `小组+淘汰赛制需要至少 ${G * 2} 个参赛单元（${G} 组 × 每组至少 2 个）` });
+    if (apg >= Math.ceil(entries.length / G)) {
+      return res.status(400).json({ error: '出线名额不能大于等于小组人数（每个小组至少要淘汰 1 个）' });
+    }
+  }
+
+  try {
+    let editionId, roundId;
+    tx(() => {
+      query('INSERT INTO rounds (tournament_id, edition, round_number, date, level) VALUES (?, ?, 1, ?, ?)',
+        [event.tournament_id, editionNo, date, level]);
+      roundId = lastInsertId();
+      query(`INSERT INTO event_editions (event_id, edition, date, level, status, round_id, created_at)
+             VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
+        [event.id, editionNo, date, level, roundId, new Date().toISOString()]);
+      editionId = lastInsertId();
+      writeEditionEntries(editionId, event.id, entries);
+      if (event.tournament_id) {
+        query('UPDATE tournaments SET type = ?, level = ? WHERE id = ?',
+          [tournamentTypeFor(event, entries, norm.genderOf), level, event.tournament_id]);
+      }
+    });
+    res.json({ id: editionId, round_id: roundId });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 一届的完整详情。管理端工作台与前台「赛事查询」共用这一个接口。
+app.get('/api/editions/:id', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event, gameNeed } = ctx;
+  const graph = loadEventGraph(ed.id);
+
+  const rows = graph.ties.map(t => ({
+    ...t,
+    items: (graph.itemsByTie[t.id] || []).map(it => ({
+      ...it,
+      side1_players: it.side1_players ? JSON.parse(it.side1_players) : [],
+      side2_players: it.side2_players ? JSON.parse(it.side2_players) : [],
+      games: graph.gamesByItem[it.id] || []
+    })),
+    outcome: tieOutcome(graph, t, gameNeed)
+  }));
+
+  const groupNos = [...new Set(graph.entries.filter(e => e.group_no > 0).map(e => e.group_no))].sort((a, b) => a - b);
+  const standings = {};
+  for (const g of groupNos) standings[g] = groupStandings(graph, g, gameNeed);
+  // 与 computeEventRanking 保持同一口径：一场没打就不显示名次，否则等于是「按录入顺序冒充结果」
+  const ordered = eventHasResults(graph) ? finalOrder(event, graph, gameNeed) : [];
+  // 最终名次要带积分：前台只读页按老赛事卡片的样式展示「排名 + 积分」，
+  // 这里直接复用 computeEventRanking 的 points_earned，保证与总积分榜同一个数。
+  const rk = eventHasResults(graph) ? computeEventRanking(ed, ed.level) : null;
+  const ptsByEntry = {};
+  if (rk) for (const r of rk.rankings) ptsByEntry[r.entry_id] = r.points_earned;
+  const finalRanks = ordered.map((e, i) => ({
+    rank: i + 1, entry_id: e.id, label: e.label,
+    member_ids: graph.membersMap[e.id] || [],
+    points: ptsByEntry[e.id] != null ? ptsByEntry[e.id] : null
+  }));
+
+  // 种子值：参赛单元成员的总积分之和（口径由和哥定）。只用于排序与展示，不参与任何比分计算。
+  const seedMap = entrySeedMap(graph);
+  const seedRank = seedRanks(graph, seedMap);
+
+  res.json({
+    edition: ed, event, items: graph.items, best_of: event.best_of,
+    entries: graph.entries.map(e => ({ ...e, members: graph.membersMap[e.id] || [], seed: seedMap[e.id] || 0, seed_rank: seedRank[e.id] || 0 })),
+    ties: rows, standings, final_ranks: finalRanks,
+    ko_rounds: koMaxRound(ed.id)
+  });
+});
+
+// 手动分组：由管理员指定每个参赛单元进哪个组。写的是 event_entries.group_no，
+// 之后「生成循环对阵」会直接沿用这份分组，不再做蛇形分配。
+app.post('/api/editions/:id/set-groups', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event } = ctx;
+  if (!formatHasGroup(event.format)) return res.status(400).json({ error: '该赛事赛制没有小组赛' });
+  const G = Math.max(1, event.group_count || 1);
+  const b = req.body || {};
+
+  const entries = query('SELECT * FROM event_entries WHERE edition_id = ? ORDER BY seq, id', [ed.id]);
+  if (!entries.length) return res.status(400).json({ error: '本届还没有参赛单元' });
+
+  let assign;
+  if (Array.isArray(b.assign)) {
+    // 手动指定：[[entryId, groupNo], ...]
+    const byId = {};
+    for (const e of entries) byId[e.id] = e;
+    const got = {};
+    for (const [eid, g] of b.assign) {
+      const id = parseInt(eid), gn = parseInt(g);
+      if (!byId[id]) return res.status(400).json({ error: '参赛单元不在本届名单里' });
+      if (!(gn >= 1 && gn <= G)) return res.status(400).json({ error: `组号只能是 1 ~ ${G}` });
+      got[id] = gn;
+    }
+    for (const e of entries) if (!got[e.id]) return res.status(400).json({ error: `「${e.label}」还没指定小组` });
+    assign = got;
+  } else {
+    // 自动：按种子顺序蛇形分组（前端「按积分自动蛇形分组」按钮走这条）
+    const graph = loadEventGraph(ed.id);
+    const order = seedOrder2(graph, b.seed_by || event.seed_by);
+    const a = {};
+    order.forEach((eid, i) => {
+      const round = Math.floor(i / G), pos = i % G;
+      a[eid] = ((round % 2 === 0) ? pos : (G - 1 - pos)) + 1;
+    });
+    assign = a;
+  }
+
+  const cnt = {};
+  for (const e of entries) cnt[assign[e.id]] = (cnt[assign[e.id]] || 0) + 1;
+  for (let g = 1; g <= G; g++) {
+    if (!cnt[g]) return res.status(400).json({ error: `第 ${g} 组是空的，请每个组至少放 1 个参赛单元` });
+  }
+  for (const g of Object.keys(cnt)) {
+    if (cnt[g] < 2) return res.status(400).json({ error: `第 ${g} 组只有 1 个参赛单元，打不了循环赛` });
+  }
+
+  try {
+    tx(() => {
+      for (const e of entries) query('UPDATE event_entries SET group_no = ? WHERE id = ?', [assign[e.id], e.id]);
+      // 分组变了，已有对阵必然失效
+      clearStage(ed.id, 'group'); clearStage(ed.id, 'ko'); clearStage(ed.id, 'third');
+      updateEventStatus(ed.id);
+    });
+    res.json({ success: true, groups: G, assign });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 改届：日期 / 级别 / 届数 / 参赛名单。改名单会把本届已生成的对阵清空（名单变了对阵必然失效）。
+app.put('/api/editions/:id', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event } = ctx;
+  const b = req.body || {};
+  try {
+    tx(() => {
+      if (b.edition !== undefined) {
+        const n = Math.max(1, parseInt(b.edition) || 1);
+        if (n !== ed.edition && query('SELECT id FROM event_editions WHERE event_id = ? AND edition = ?', [event.id, n]).length) {
+          throw new Error(`第 ${n} 届已存在`);
+        }
+        query('UPDATE event_editions SET edition = ? WHERE id = ?', [n, ed.id]);
+        if (ed.round_id) query('UPDATE rounds SET edition = ? WHERE id = ?', [n, ed.round_id]);
+      }
+      const date = b.date || ed.date;
+      const level = b.level !== undefined ? (parseInt(b.level) || 1000) : ed.level;
+      if (b.date) {
+        query('UPDATE event_editions SET date = ? WHERE id = ?', [b.date, ed.id]);
+        if (ed.round_id) query('UPDATE rounds SET date = ? WHERE id = ?', [b.date, ed.round_id]);
+      }
+      if (b.level !== undefined) {
+        query('UPDATE event_editions SET level = ? WHERE id = ?', [level, ed.id]);
+        if (ed.round_id) query('UPDATE rounds SET level = ? WHERE id = ?', [level, ed.round_id]);
+        if (event.tournament_id) query('UPDATE tournaments SET level = ? WHERE id = ?', [level, event.tournament_id]);
+      }
+      if (Array.isArray(b.entries)) {
+        const norm = normalizeEntries(event, b.entries);
+        if (norm.error) throw new Error(norm.error);
+        if (event.format === 'group_ko') {
+          const G = Math.max(1, event.group_count || 1);
+          const apg = Math.max(1, event.advance_per_group || 1);
+          if (norm.entries.length < G * 2) throw new Error(`小组+淘汰赛制需要至少 ${G * 2} 个参赛单元（${G} 组 × 每组至少 2 个）`);
+          if (apg >= Math.ceil(norm.entries.length / G)) throw new Error('出线名额不能大于等于小组人数（每个小组至少要淘汰 1 个）');
+        }
+        // 名单变了 → 旧对阵全部作废
+        clearStage(ed.id, 'group'); clearStage(ed.id, 'ko'); clearStage(ed.id, 'third');
+        query('DELETE FROM event_entry_members WHERE entry_id IN (SELECT id FROM event_entries WHERE edition_id = ?)', [ed.id]);
+        query('DELETE FROM event_entries WHERE edition_id = ?', [ed.id]);
+        writeEditionEntries(ed.id, event.id, norm.entries);
+        query("UPDATE event_editions SET status = 'draft' WHERE id = ?", [ed.id]);
+        if (event.tournament_id) {
+          query('UPDATE tournaments SET type = ? WHERE id = ?', [tournamentTypeFor(event, norm.entries, norm.genderOf), event.tournament_id]);
+        }
+      }
+    });
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 删掉一届：对阵 / 名单 / 镜像轮次一起撤，积分榜与荣誉同步回落
+function deleteEditionData(ed) {
+  query(`DELETE FROM event_tie_games WHERE tie_item_id IN
+         (SELECT ti.id FROM event_tie_items ti JOIN event_ties t ON t.id = ti.tie_id WHERE t.edition_id = ?)`, [ed.id]);
+  query(`DELETE FROM event_tie_items WHERE tie_id IN (SELECT id FROM event_ties WHERE edition_id = ?)`, [ed.id]);
+  query('DELETE FROM event_ties WHERE edition_id = ?', [ed.id]);
+  query('DELETE FROM event_entry_members WHERE entry_id IN (SELECT id FROM event_entries WHERE edition_id = ?)', [ed.id]);
+  query('DELETE FROM event_entries WHERE edition_id = ?', [ed.id]);
+  if (ed.round_id) {
+    query('DELETE FROM matches WHERE round_id = ?', [ed.round_id]);
+    query('DELETE FROM teams WHERE round_id = ?', [ed.round_id]);
+    query('DELETE FROM rounds WHERE id = ?', [ed.round_id]);
+  }
+}
+
+app.delete('/api/editions/:id', (req, res) => {
+  const ed = editionRow(parseInt(req.params.id));
+  if (!ed) return res.status(404).json({ error: '该届不存在' });
+  tx(() => {
+    deleteEditionData(ed);
+    query('DELETE FROM event_editions WHERE id = ?', [ed.id]);
+  });
+  res.json({ success: true });
+});
+
+// 生成小组循环对阵。分组来源二选一：
+//   group_mode = manual 且本届已经分好组 → 完全沿用管理员指定的分组，一个都不动；
+//   否则按种子顺序蛇形分配（种子依据看 seed_by）。
+app.post('/api/editions/:id/generate-groups', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event } = ctx;
+  if (!formatHasGroup(event.format)) return res.status(400).json({ error: '该赛事赛制为「淘汰赛」，没有小组赛' });
+  const entries = query('SELECT * FROM event_entries WHERE edition_id = ? ORDER BY seq, id', [ed.id]);
+  if (entries.length < 2) return res.status(400).json({ error: '至少需要 2 个参赛单元' });
+  const G = Math.max(1, Math.min(event.group_count || 1, Math.floor(entries.length / 2) || 1));
+  const force = !!(req.body && req.body.force);   // force=1：即使已手动分好组也重新按种子分
+
+  // 已有的手动分组（group_no 全部落在 1..G 内且每组 >= 2）才作数
+  const already = {};
+  let manualOK = entries.length > 0;
+  for (const e of entries) {
+    const g = e.group_no || 0;
+    if (!(g >= 1 && g <= G)) { manualOK = false; break; }
+    already[e.id] = g;
+  }
+  if (manualOK) {
+    const cnt = {};
+    for (const e of entries) cnt[already[e.id]] = (cnt[already[e.id]] || 0) + 1;
+    for (let g = 1; g <= G; g++) if (!cnt[g] || cnt[g] < 2) manualOK = false;
+  }
+  // 「已经分好组」就是权威：手动分过 / 上次生成留下的分组都认，只有 force 才重排。
+  const useManual = manualOK && !force;
+
+  try {
+    tx(() => {
+      clearStage(ed.id, 'group');
+      // assign：entryId -> 组号（1..G）
+      let assign;
+      if (useManual) {
+        assign = already;
+      } else {
+        // 蛇形分配：第 1 轮正序、第 2 轮倒序…… 让各组实力尽量均匀
+        const graph = loadEventGraph(ed.id);
+        const order = seedOrder2(graph, event.seed_by);
+        assign = {};
+        order.forEach((eid, i) => {
+          const round = Math.floor(i / G), pos = i % G;
+          assign[eid] = ((round % 2 === 0) ? pos : (G - 1 - pos)) + 1;
+        });
+      }
+      entries.forEach(e => query('UPDATE event_entries SET group_no = ? WHERE id = ?', [assign[e.id], e.id]));
+      for (let g = 1; g <= G; g++) {
+        const list = entries.filter(e => assign[e.id] === g);
+        let seq = 1;
+        for (let a = 0; a < list.length; a++) {
+          for (let b = a + 1; b < list.length; b++) {
+            createTie(event, ed.id, { stage: 'group', group_no: g, side1: list[a].id, side2: list[b].id, seq: seq++ });
+          }
+        }
+      }
+      // 分组变了，淘汰赛要重来
+      clearStage(ed.id, 'ko');
+      clearStage(ed.id, 'third');
+      updateEventStatus(ed.id);
+    });
+    res.json({ success: true, groups: G });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 生成淘汰签表。小组赛+淘汰赛时，必须先打完小组赛，否则出线名单是错的。
+app.post('/api/editions/:id/generate-ko', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event, gameNeed } = ctx;
+  // 单循环 = 只循环不淘汰，生成签表会把赛制悄悄改成「小组+淘汰」，这里直接挡掉
+  if (event.format === 'rr') return res.status(400).json({ error: '该赛事赛制为「单循环赛」，没有淘汰赛' });
+  const graph = loadEventGraph(ed.id);
+
+  // 出线者按「种子位」排好序的名单。三种对阵方式的差别只在这份名单怎么排：
+  //   seed         名次优先再按组（A1 B1 A2 B2）→ 标准种子位天然错开，A1 打 B2、B1 打 A2
+  //   random       打乱后随机落位，可能同组相遇
+  //   random_avoid 打乱但强制首轮回避同组
+  let qualifiers = [];
+  const qualGroup = {};                       // entryId -> 小组号（仅 group_ko 有）
+  if (event.format === 'group_ko') {
+    const undecided = graph.ties.filter(t => t.stage === 'group' && !t.winner_entry_id);
+    if (undecided.length) {
+      return res.status(400).json({ error: `还有 ${undecided.length} 场小组赛未完成，请先打完再生成淘汰签表` });
+    }
+    const G = Math.max(1, event.group_count || 1), adv = Math.max(1, event.advance_per_group || 1);
+    const tables = {};
+    for (let g = 1; g <= G; g++) tables[g] = groupStandings(graph, g, gameNeed);
+    for (let r = 0; r < adv; r++) for (let g = 1; g <= G; g++) {
+      const row = tables[g][r];
+      if (row) { qualifiers.push(row.entry_id); qualGroup[row.entry_id] = g; }
+    }
+  } else {
+    // 纯淘汰赛：没有小组名次，种子就按赛事配置的依据排（录入顺序 / 总积分）
+    qualifiers = seedOrder2(graph, event.seed_by);
+  }
+  if (qualifiers.length < 2) return res.status(400).json({ error: '可参赛/可出线的单元不足 2 个，无法生成淘汰签表' });
+
+  const koMode = KO_MODE_MAP[event.ko_mode] ? event.ko_mode : 'seed';
+  const size = Math.pow(2, Math.ceil(Math.log2(qualifiers.length)));
+  const R = Math.round(Math.log2(size));
+  const order = seedOrder(size);
+
+  // 首轮有多少场「两个人都到齐」的对阵（有 bye 的场次天然不会同组相遇，不用管）
+  const firstRoundPairs = Math.floor(size / 2);
+  const shuffle = arr => {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  };
+  // 按 seedOrder 落位后，检查首轮每个 slot 上的两人是否同组
+  const firstRoundClash = arr => {
+    for (let i = 0; i < firstRoundPairs; i++) {
+      const a = arr[order[i * 2] - 1], b = arr[order[i * 2 + 1] - 1];
+      if (a && b && qualGroup[a] && qualGroup[a] === qualGroup[b]) return true;
+    }
+    return false;
+  };
+  let placed = qualifiers;
+  if (koMode === 'random') {
+    placed = shuffle(qualifiers);
+  } else if (koMode === 'random_avoid') {
+    // 抽不到就多抽几次；真的抽不出来（例如某组出线人数过多）就退回普通随机，
+    // 不让它卡住 —— 签表生成后管理员还能用「点两个位置交换」手工调。
+    let ok = false;
+    for (let t = 0; t < 300 && !ok; t++) {
+      const cand = shuffle(qualifiers);
+      if (!firstRoundClash(cand)) { placed = cand; ok = true; }
+    }
+    if (!ok) placed = shuffle(qualifiers);
+  }
+
+  try {
+    tx(() => {
+      clearStage(ed.id, 'ko');
+      clearStage(ed.id, 'third');
+      for (let i = 0; i < size / 2; i++) {
+        const s1 = order[i * 2], s2 = order[i * 2 + 1];
+        createTie(event, ed.id, {
+          stage: 'ko', ko_round: 1, slot: i, seq: i + 1,
+          side1: s1 <= placed.length ? placed[s1 - 1] : null,
+          side2: s2 <= placed.length ? placed[s2 - 1] : null
+        });
+      }
+      for (let r = 2; r <= R; r++) {
+        const cnt = size / Math.pow(2, r);
+        for (let i = 0; i < cnt; i++) createTie(event, ed.id, { stage: 'ko', ko_round: r, slot: i, seq: i + 1 });
+      }
+      if (event.third_place && R >= 2) createTie(event, ed.id, { stage: 'third', ko_round: R, slot: 0, seq: 1 });
+      autoAdvanceByes(ed.id);
+      updateEventStatus(ed.id);
+    });
+    res.json({ success: true, size, rounds: R, qualifiers: qualifiers.length });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 手动调整签表：交换两个位置上的参赛单元。
+// 约束：所有淘汰赛都还没开打才允许 —— 一旦有比分，改了上游就要连带作废下游，风险大于收益，
+// 这种情况请用「重新生成淘汰签表」。
+app.post('/api/editions/:id/ko-swap', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed } = ctx;
+  const { a, b } = req.body || {};
+  if (!a || !b || a.ko_round !== b.ko_round) {
+    return res.status(400).json({ error: '只能在同一轮内交换位置' });
+  }
+  const ta = query("SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'ko' AND ko_round = ? AND slot = ?", [ed.id, a.ko_round, a.slot])[0];
+  const tb = query("SELECT * FROM event_ties WHERE edition_id = ? AND stage = 'ko' AND ko_round = ? AND slot = ?", [ed.id, b.ko_round, b.slot])[0];
+  if (!ta || !tb) return res.status(404).json({ error: '签表位置不存在' });
+  const played = query("SELECT COUNT(*) AS c FROM event_ties WHERE edition_id = ? AND stage IN ('ko','third') AND winner_entry_id IS NOT NULL", [ed.id])[0].c;
+  if (played > 0) return res.status(400).json({ error: '淘汰赛已开打，无法再调整签表。如需重排请点「重新生成淘汰签表」' });
+
+  const colA = a.side === 1 ? 'side1_entry_id' : 'side2_entry_id';
+  const colB = b.side === 1 ? 'side1_entry_id' : 'side2_entry_id';
+  try {
+    tx(() => {
+      const va = ta[colA], vb = tb[colB];
+      if (ta.id === tb.id) {
+        query(`UPDATE event_ties SET ${colA} = ?, ${colB} = ? WHERE id = ?`, [vb, va, ta.id]);
+      } else {
+        query(`UPDATE event_ties SET ${colA} = ? WHERE id = ?`, [vb, ta.id]);
+        query(`UPDATE event_ties SET ${colB} = ? WHERE id = ?`, [va, tb.id]);
+      }
+      // 轮空关系可能变了：清掉全部胜负再重推一遍轮空
+      query("UPDATE event_ties SET winner_entry_id = NULL, state = 'pending' WHERE edition_id = ? AND stage IN ('ko','third')", [ed.id]);
+      autoAdvanceByes(ed.id);
+      updateEventStatus(ed.id);
+    });
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 录入 / 修改一场对抗的结果
+app.post('/api/editions/:id/tie/:tieId', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event, gameNeed } = ctx;
+  const tie = query('SELECT * FROM event_ties WHERE id = ? AND edition_id = ?', [parseInt(req.params.tieId), ed.id])[0];
+  if (!tie) return res.status(404).json({ error: '该场对抗不存在' });
+  if (!tie.side1_entry_id || !tie.side2_entry_id) {
+    return res.status(400).json({ error: '对阵双方还没确定（等待上一轮结果）' });
+  }
+
+  const body = req.body || {};
+  const itemsIn = Array.isArray(body.items) ? body.items : [];
+  const genderOf = playerGenderMap();
+  const membersMap = {};
+  for (const r of query(`SELECT m.entry_id, m.player_id FROM event_entry_members m
+                         JOIN event_entries e ON e.id = m.entry_id
+                         WHERE e.edition_id = ? ORDER BY m.seq`, [ed.id])) {
+    (membersMap[r.entry_id] || (membersMap[r.entry_id] = [])).push(r.player_id);
+  }
+
+  // 先全量校验，任何一项不合法就整体拒绝 —— 免得录到一半写进去一半
+  const prepared = [];
+  for (const it of itemsIn) {
+    const row = query('SELECT * FROM event_tie_items WHERE id = ? AND tie_id = ?', [parseInt(it.item_id), tie.id])[0];
+    if (!row) continue;
+    const s1 = (it.side1_players || []).map(Number).filter(Boolean);
+    const s2 = (it.side2_players || []).map(Number).filter(Boolean);
+    const def = TEAM_ITEM_MAP[row.code];
+    if (event.kind === 'team' && def) {
+      const e1 = validateLineup(def, s1, genderOf, membersMap[tie.side1_entry_id]);
+      if (e1) return res.status(400).json({ error: `左方 ${e1}` });
+      const e2 = validateLineup(def, s2, genderOf, membersMap[tie.side2_entry_id]);
+      if (e2) return res.status(400).json({ error: `右方 ${e2}` });
+      if (s1.length && s2.length) {
+        for (const pid of s1) if (s2.includes(pid)) return res.status(400).json({ error: `${def.name}中双方不能有同一名选手` });
+      }
+    } else if (s1.length > 2 || s2.length > 2) {
+      return res.status(400).json({ error: '单项赛每方最多 2 名选手' });
+    }
+    const games = (Array.isArray(it.games) ? it.games : []).map(g => ({
+      s1: Math.max(0, parseInt(g.s1) || 0),
+      s2: Math.max(0, parseInt(g.s2) || 0)
+    })).filter(g => g.s1 || g.s2).slice(0, event.best_of || 3);   // 一局制只认第一局
+    prepared.push({ row, s1, s2, games });
+  }
+
+  try {
+    tx(() => {
+      for (const p of prepared) {
+        query('UPDATE event_tie_items SET side1_players = ?, side2_players = ? WHERE id = ?',
+          [JSON.stringify(p.s1), JSON.stringify(p.s2), p.row.id]);
+        query('DELETE FROM event_tie_games WHERE tie_item_id = ?', [p.row.id]);
+        p.games.forEach((g, i) => query('INSERT INTO event_tie_games (tie_item_id, game_no, s1, s2) VALUES (?, ?, ?, ?)',
+          [p.row.id, i + 1, g.s1, g.s2]));
+      }
+      settleTie(ed.id, tie.id, gameNeed);
+      fillThirdPlace(ed.id, event);
+      updateEventStatus(ed.id);
+    });
+    const fresh = query('SELECT * FROM event_ties WHERE id = ?', [tie.id])[0];
+    res.json({ success: true, tie: fresh });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// 清空一场对抗的结果
+app.post('/api/editions/:id/tie/:tieId/clear', (req, res) => {
+  const ctx = editionCtx(parseInt(req.params.id));
+  if (!ctx) return res.status(404).json({ error: '该届不存在' });
+  const { ed, event } = ctx;
+  const tie = query('SELECT * FROM event_ties WHERE id = ? AND edition_id = ?', [parseInt(req.params.tieId), ed.id])[0];
+  if (!tie) return res.status(404).json({ error: '该场对抗不存在' });
+  tx(() => {
+    resetTie(tie.id);
+    propagate(query('SELECT * FROM event_ties WHERE id = ?', [tie.id])[0], null);
+    fillThirdPlace(ed.id, event);
+    updateEventStatus(ed.id);
+  });
+  res.json({ success: true });
 });
 
 // ==================== Auth ====================
