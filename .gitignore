@@ -7,3 +7,12 @@ fix_names.js
 test_schema.js
 restore.js
 backups/
+
+# 数据库备份快照：本地保留即可，不入库
+data.db.backup.*
+data.db.bak
+data.db.bak.*
+# 导出的数据快照
+data.txt
+# 本地临时头像原图
+avatar_local_*
