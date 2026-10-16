@@ -20,6 +20,27 @@ h4 { font-size: 14px; margin-bottom: 8px; color: #4a5568; }
 .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .form-row input, .form-row select { padding: 8px 12px; border: 1px solid #d2d6dc; border-radius: 6px; font-size: 14px; outline: none; flex: 1; min-width: 150px; }
 .form-row input:focus, .form-row select:focus { border-color: #48bb78; box-shadow: 0 0 0 3px rgba(72,187,120,0.1); }
+
+/* 选手输入框的联想下拉。
+   .form-row 的 input 原本是 flex:1，包一层 ac-wrap 后弹性要转移到包裹层上，
+   否则 input 会失去拉伸、下拉也会跟着输入框长度走偏。 */
+.ac-wrap { position: relative; flex: 1; min-width: 150px; }
+.ac-wrap input { width: 100%; box-sizing: border-box; }
+.ac-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+  max-height: 260px; overflow-y: auto; background: #fff;
+  border: 1px solid #e2e8f0; border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.12); display: none; }
+.ac-list.open { display: block; }
+.ac-item { padding: 9px 12px; cursor: pointer; display: flex; align-items: baseline; gap: 8px;
+  border-bottom: 1px solid #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+.ac-item:hover, .ac-item.active { background: #f0fff4; }
+.ac-name { font-size: 14px; color: #2d3748; font-weight: 500; }
+.ac-id { font-size: 12px; color: #a0aec0; margin-left: auto; flex: none; }
+.ac-empty { padding: 10px 12px; font-size: 13px; color: #a0aec0; }
+/* 高亮命中片段，让用户一眼看到匹配在哪 */
+.ac-hl { color: #276749; background: #c6f6d5; border-radius: 3px; padding: 0 1px; }
+
 button { padding: 8px 20px; background: #48bb78; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
 button:hover { background: #38a169; }
 button.secondary { background: #718096; }
@@ -54,6 +75,90 @@ tr:hover { background: #f7fafc; }
 .player-stat-card .stat-item { text-align: center; }
 .player-stat-card .stat-value { font-size: 28px; font-weight: 700; color: #2d3748; }
 .player-stat-card .stat-label { font-size: 12px; color: #718096; margin-top: 4px; }
+
+/* 选手资料页的四项数据模块：[总场次+胜场] [胜率] [荣誉] [最高排名]
+   荣誉块要放图标，所以比其它三块宽（flex 1.6），其余等宽。 */
+/* 选手资料页四项模块的公共尺寸：胜率圆环和荣誉图标必须一样大，
+   所以统一用 --stat-orb 驱动，别再各写各的 px（手改容易改漏一处而不同步）。 */
+.stat-modules { --stat-orb: 74px; display: flex; align-items: stretch; gap: 0; margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 16px; }
+.stat-mod { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 6px 10px; border-right: 1px solid #edf2f7; min-width: 0; }
+.stat-mod:last-child { border-right: none; }
+.stat-mod-honor { flex: 1.7; cursor: pointer; position: relative; border-radius: 8px; transition: background .15s; }
+.stat-mod-honor:hover { background: #f0fff4; }
+.stat-value { font-size: 28px; font-weight: 700; color: #2d3748; line-height: 1.1; }
+.stat-unit { font-size: 16px; font-weight: 600; margin-left: 1px; }
+/* 总场次 + 胜场 在同一块里并排显示。
+   注意 .stat-mod 本身是 flex-column，这里必须显式改回 row，
+   否则两个数字会一上一下堆着（2026-10-16 截图复现过）。 */
+.stat-mod-cnt { flex-direction: row; gap: 14px; }
+.stat-mod-cnt .stat-sub { display: flex; flex-direction: column; align-items: center; }
+.stat-sub-value { font-size: 28px; font-weight: 700; color: #2d3748; line-height: 1.1; }
+.stat-sub-label { font-size: 12px; color: #718096; margin-top: 4px; }
+
+/* 胜率圆环：conic-gradient 画两段，绿=胜、红=负。
+   --wr 是胜率百分比，由 JS 内联注入。ring 里挖个洞放数字（用绝对定位的白色内圆）。
+   尺寸走 --stat-orb，和荣誉块图标保持一致。 */
+.wr-ring { position: relative; width: var(--stat-orb); height: var(--stat-orb); border-radius: 50%;
+  background: conic-gradient(#48bb78 0 var(--wr, 0%), #e53e3e var(--wr, 0%) 100%);
+  display: flex; align-items: center; justify-content: center; }
+/* 洞按环的 76% 走，环多大洞就多大，不用另调 */
+.wr-ring-hole { width: 76%; height: 76%; border-radius: 50%; background: #fff;
+  display: flex; align-items: center; justify-content: center; }
+.wr-ring-value { font-size: 20px; font-weight: 700; color: #2d3748; line-height: 1; }
+.wr-ring-value .stat-unit { font-size: 11px; font-weight: 600; }
+
+/* 荣誉块：左边放大版赛事图标，右边「赛事名 + 冠亚季」两行。
+   图标尺寸必须与胜率圆环一致，共用 --stat-orb。 */
+.stat-honor-line { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+.stat-honor-icon { width: var(--stat-orb); height: var(--stat-orb); border-radius: 10px;
+  object-fit: cover; flex: none; }
+.stat-honor-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center;
+  width: var(--stat-orb); height: var(--stat-orb); line-height: var(--stat-orb);
+  font-size: 32px; display: inline-block; border-radius: 10px; flex: none; }
+.stat-honor-text { min-width: 0; text-align: left; }
+.stat-honor-title { font-size: 16px; font-weight: 700; color: #2d3748; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-honor-sub { font-size: 14px; color: #718096; margin-top: 4px; white-space: nowrap; }
+.stat-honor-tier { font-weight: 700; }
+.stat-honor-tier.tier-1 { color: #b7791f; }
+.stat-honor-tier.tier-2 { color: #718096; }
+.stat-honor-tier.tier-3 { color: #c05621; }
+.stat-honor-empty { font-size: 20px; font-weight: 700; color: #cbd5e0; }
+/* 荣誉块右下角的「可点进去」小箭头，用 CSS 边框画，不用 emoji */
+.stat-honor-arrow { position: absolute; right: 8px; top: 50%; width: 8px; height: 8px;
+  border-top: 2px solid #a0aec0; border-right: 2px solid #a0aec0; transform: translateY(-50%) rotate(45deg); }
+.stat-mod-honor:hover .stat-honor-arrow { border-color: #48bb78; }
+
+/* 荣誉清单页 */
+.honor-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+.honor-chip { font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: #f7fafc; border: 1px solid #e2e8f0; }
+.honor-chip.gold { background: #fffff0; border-color: #ecc94b; color: #975a16; }
+.honor-chip.silver { background: #f7fafc; border-color: #cbd5e0; color: #4a5568; }
+.honor-chip.bronze { background: #fffaf0; border-color: #ed8936; color: #9c4221; }
+.honor-chip.total { color: #718096; }
+.honor-group { margin-top: 18px; }
+.honor-group-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 15px; font-weight: 700; padding: 8px 12px; border-radius: 8px 8px 0 0; }
+.honor-group-head.gold { background: #fffff0; color: #975a16; border-left: 4px solid #ecc94b; }
+.honor-group-head.silver { background: #f7fafc; color: #4a5568; border-left: 4px solid #cbd5e0; }
+.honor-group-head.bronze { background: #fffaf0; color: #9c4221; border-left: 4px solid #ed8936; }
+.honor-group-count { font-size: 13px; font-weight: 600; opacity: .75; }
+.honor-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border-bottom: 1px solid #edf2f7; }
+.honor-row:last-child { border-bottom: none; }
+.honor-row-icon { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: none; }
+.honor-row-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 40px; font-size: 19px; display: inline-block; }
+.honor-row-main { flex: 1; min-width: 0; }
+.honor-row-title { font-size: 15px; font-weight: 600; color: #2d3748; }
+.honor-row-title small { color: #718096; font-weight: 400; font-size: 12px; }
+.honor-row-meta { font-size: 12px; color: #a0aec0; margin-top: 2px; }
+.honor-row-right { display: flex; align-items: center; gap: 8px; flex: none; }
+.honor-tier-badge { font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.honor-tier-badge.tier-1 { background: #fefcbf; color: #975a16; }
+.honor-tier-badge.tier-2 { background: #edf2f7; color: #4a5568; }
+.honor-tier-badge.tier-3 { background: #feebc8; color: #9c4221; }
+.honor-level { font-size: 12px; color: #a0aec0; font-weight: 600; }
+.honor-partner { color: #718096; }
 .match-history-item { padding: 12px; border-left: 3px solid #48bb78; margin-bottom: 8px; background: #f7fafc; border-radius: 0 6px 6px 0; }
 .match-history-item.loss { border-left-color: #e53e3e; }
 .h2h-summary { text-align: center; padding: 20px; }
@@ -103,6 +208,16 @@ body:has(#tab-home.active) .container { padding: 0; }
   .rules-card .home-card-body { flex-direction: column; gap: 8px; }
   .player-stat-card .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .player-stat-card { padding: 14px; }
+  /* 平板：四项模块收窄，荣誉块仍保留更宽的配额 */
+  .stat-value, .stat-sub-value { font-size: 22px; }
+  .stat-unit { font-size: 13px; }
+  .stat-mod { padding: 6px 6px; }
+  .stat-mod-cnt { gap: 10px; }
+  /* 平板：只改 --stat-orb 一处，圆环和荣誉图标跟着一起缩 */
+  .stat-modules { --stat-orb: 62px; }
+  .wr-ring-value { font-size: 17px; }
+  .stat-honor-title { font-size: 15px; }
+  .stat-honor-sub { font-size: 13px; }
   .match-history-item { padding: 8px; }
   #admin-subnav { padding: 0 8px; overflow-x: auto; }
   #admin-subnav a { padding: 8px 10px; font-size: 13px; }
@@ -111,10 +226,11 @@ body:has(#tab-home.active) .container { padding: 0; }
   .query-tour-icon-ph { line-height: 48px; font-size: 22px; }
   .round-tour-icon { width: 36px; height: 36px; }
   .round-tour-icon-ph { line-height: 36px; font-size: 16px; }
-  /* 中小屏（平板）一行三个，图标相应缩小；≤480px 的手机端由下方规则覆盖为一行两个 */
-  .tour-grid { grid-template-columns: repeat(3, 1fr); gap: 14px; }
-  .tour-tile { padding: 14px 8px; gap: 8px; }
-  .tour-tile img, .tile-icon-ph { width: 84px; height: 84px; line-height: 84px; font-size: 38px; }
+  /* 中小屏（平板）一行三个，图标继续占满格子宽度；≤480px 的手机端由下方规则覆盖为一行两个 */
+  .tour-grid { grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .tour-tile { padding: 9px 7px; gap: 7px; }
+  .tour-tile img, .tile-icon-ph { max-width: 170px; height: 155px; }
+  .tile-icon-ph { font-size: 46px; }
   .tile-name { font-size: 15px; }
   .h2h-summary .big-score { font-size: 36px; }
 }
@@ -171,14 +287,22 @@ body:has(#tab-home.active) .container { padding: 0; }
 .rank-more:hover { border-color: #48bb78; color: #276749; background: #f0fff4; }
 
 /* 赛事查询页：赛事图标按钮网格（点击才加载该赛事最新赛况） */
-/* 电脑端：一行四个，图标放大到 110px */
-.tour-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
-.tour-tile { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 10px;
+/* 电脑端：一行四个，图标随格子宽度自适应（92%，上限 180px），
+   内边距收到 10px/8px，让图标占满按钮、四周空白最小化。
+   源图统一 512x512（见 app.js ICON_SIZE），最大物理需求 225px（180px@125% 缩放），
+   仍有 2.28x 像素余量，放大后不糊。 */
+.tour-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.tour-tile { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 8px;
   background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; cursor: pointer; transition: all .15s; }
 .tour-tile:hover { border-color: #48bb78; box-shadow: 0 4px 14px rgba(0, 0, 0, .1); transform: translateY(-2px); }
 .tour-tile.active { border-color: #48bb78; background: #f0fff4; }
-.tour-tile img { width: 110px; height: 110px; border-radius: 14px; object-fit: cover; display: block; }
-.tile-icon-ph { width: 110px; height: 110px; border-radius: 14px; background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 110px; font-size: 48px; }
+/* 用宽高自适应而非固定 px：格子变宽时图标跟着长，永远贴着按钮内缘。
+   aspect-ratio 在老 Android WebView（<88）不支持，故先给 height 兜底成正方，
+   支持的浏览器再由 aspect-ratio 精确接管（两者同值时无差异，不会跳动）。 */
+.tour-tile img, .tile-icon-ph { width: 92%; max-width: 180px; height: 165px; aspect-ratio: 1 / 1; }
+.tour-tile img { border-radius: 12px; object-fit: cover; display: block; }
+.tile-icon-ph { border-radius: 12px; background: #e2e8f0; color: #a0aec0;
+  display: flex; align-items: center; justify-content: center; font-size: 52px; }
 .tile-name { font-size: 16px; font-weight: 600; color: #2d3748; text-align: center; line-height: 1.3; }
 
 /* 赛事查询页左上角：当前选中赛事的图标，尺寸与积分排名页赛事图标同为 3em 档（42/36/33px） */
@@ -188,6 +312,20 @@ body:has(#tab-home.active) .container { padding: 0; }
 .query-tour-icon-slot { flex: none; line-height: 0; }
 .query-tour-icon { width: 58px; height: 58px; border-radius: 8px; object-fit: cover; display: block; }
 .query-tour-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 58px; font-size: 26px; }
+
+/* 赛事详情页顶部：返回键 + 赛事图标 + 标题，同一行 */
+.detail-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.detail-head h2 { margin-bottom: 0; }
+/* 返回键：箭头用 CSS 边框拼，不依赖 emoji（跨平台渲染不一致，且老 Android 可能缺字形） */
+.back-btn { display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 8px 14px; font-size: 14px; font-weight: 500; color: #2d3748;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; cursor: pointer;
+  transition: all .15s; }
+.back-btn:hover { border-color: #48bb78; color: #276749; background: #f0fff4; }
+.back-btn:active { transform: translateX(-1px); }
+.back-arrow { width: 7px; height: 7px; flex: none;
+  border-left: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(45deg); }
 
 .tour-icon { width: 3em; height: 3em; border-radius: 6px; object-fit: cover; display: block; margin: 0 auto 0.4em; }
 /* 总积分图标：宽幅线稿（约 1.85:1），保持完整不裁剪，高度按比例自适应 */
@@ -231,10 +369,15 @@ body:has(#tab-home.active) .container { padding: 0; }
   .query-tour-icon { width: 42px; height: 42px; border-radius: 6px; }
   .query-tour-icon-ph { line-height: 42px; font-size: 19px; }
   .query-head { margin-bottom: 12px; }
-  /* 手机屏一行两个赛事，图标放大便于点击 */
-  .tour-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .tour-tile img, .tile-icon-ph { width: 68px; height: 68px; line-height: 68px; font-size: 30px; }
-  .tour-tile { padding: 12px 4px; }
+  /* 手机端详情页：返回键与标题同行的横向空间不够，标题允许换行收缩 */
+  .detail-head { gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .detail-head h2 { font-size: 19px; }
+  .back-btn { padding: 7px 11px; font-size: 13px; }
+  /* 手机屏一行两个赛事，图标同样占满格子宽度便于点击 */
+  .tour-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .tour-tile { padding: 8px 6px; gap: 6px; }
+  .tour-tile img, .tile-icon-ph { max-width: 150px; height: 135px; border-radius: 10px; }
+  .tile-icon-ph { font-size: 40px; }
   .tile-name { font-size: 13px; }
   .rank-more { font-size: 13px; padding: 10px 8px; }
   .round-tour-icon { width: 33px; height: 33px; border-radius: 5px; }
@@ -242,5 +385,28 @@ body:has(#tab-home.active) .container { padding: 0; }
   .round-card-title { gap: 8px; }
   .player-stat-card .stat-value { font-size: 22px; }
   .player-stat-card .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  /* 手机：四项模块挤不下 → 第1行「场次/胜场 + 胜率」，第2行「荣誉 + 最高排名」并列。
+     用 flex-basis 100% 强制换行 + 各占一半，比 flex-wrap 自动折算更可控。 */
+  .stat-modules { flex-wrap: wrap; gap: 0; --stat-orb: 58px; }
+  .stat-mod { flex: 0 0 50%; max-width: 50%; padding: 10px 6px;
+    border-right: none; border-bottom: 1px solid #edf2f7; }
+  .stat-mod:nth-child(odd) { border-right: 1px solid #edf2f7; }
+  /* 第1行两项、第2行两项：给前两个去掉下边框更干净，但仍保留分隔线区分行 */
+  .stat-mod:nth-child(1), .stat-mod:nth-child(2) { border-bottom: 1px solid #edf2f7; }
+  .stat-mod:nth-child(3), .stat-mod:nth-child(4) { border-bottom: none; }
+  .stat-value, .stat-sub-value { font-size: 20px; }
+  .stat-unit { font-size: 12px; }
+  .stat-honor-arrow { display: none; }
+  .stat-honor-line { gap: 8px; }
+  .stat-honor-title { font-size: 14px; }
+  .stat-honor-sub { font-size: 13px; margin-top: 2px; }
+  /* 手机上荣誉块只占半宽，圆环和图标一起收到 58px（改这一处即可） */
+  .wr-ring-value { font-size: 16px; }
+  .wr-ring-value .stat-unit { font-size: 10px; }
+  .honor-row { padding: 9px 10px; gap: 9px; }
+  .honor-row-icon { width: 34px; height: 34px; }
+  .honor-row-icon-ph { line-height: 34px; font-size: 16px; }
+  .honor-row-title { font-size: 14px; }
+  .honor-chip { font-size: 12px; padding: 5px 9px; }
   .points-table th, .points-table td { font-size: 10px; padding: 3px 2px; }
 }

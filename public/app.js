@@ -1,12 +1,28 @@
 // ==================== Navigation ====================
 // 静态资源版本号：CDN（Cloudflare）会缓存无版本号的静态文件，改版后必须换号才能生效。
-// 改动 style.css / 图片后：这里 +1，并同步 index.html 里的 /style.css?v=N 与 /app.js?v=N。
-const ASSET_V = '26';
+// 注意版本号是两套、各自独立：
+//   - ASSET_V（本常量）：管 app.js 与 app.js 里引用的图片
+//   - style.css：在 index.html 里单独写 ?v=N
+// 改 app.js 或图片 → 本常量 +1，并同步 index.html 的 /app.js?v=N
+// 改 style.css   → 只改 index.html 的 /style.css?v=N
+const ASSET_V = '34';
 function assetUrl(p) { return p + '?v=' + ASSET_V; }
 let currentAdminSub = 'players';
+// 赛事没有自定义图标时，荣誉/详情处用的占位字符。
+// 声明在文件顶部，避免被下面各渲染函数在 TDZ 里引用。
+const HONOR_FALLBACK_ICON = '🏸';
 function displayName(p) { return p.real_name || p.name; }
 function htmlEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 赛事详情深链参数：?tid=<赛事id>。用 replaceState 维护，不写浏览器历史，
+// 「返回」行为完全由页面里的返回键控制，不跟浏览器历史纠缠。
+function clearTidParam() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has('tid')) return;
+  url.searchParams.delete('tid');
+  history.replaceState(null, '', url);
 }
 
 document.querySelectorAll('[data-tab]').forEach(link => {
@@ -32,10 +48,12 @@ document.querySelectorAll('[data-tab]').forEach(link => {
     }
 
     document.getElementById('tab-' + tab).classList.add('active');
+    // 从赛事详情页点导航去别处时，清掉 URL 上的 ?tid=，否则刷新会又跳回详情页
+    if (tab !== 'query') clearTidParam();
     if (tab === 'home') loadHome();
     if (tab === 'rankings') loadRankings();
     if (tab === 'query') initQueryPage();
-    if (tab === 'player-query') loadPlayerQueryList();
+    if (tab === 'player-query') reloadPlayerQueryList();
     if (tab === 'headtohead') document.getElementById('h2h-result').innerHTML = '';
   });
 });
@@ -150,6 +168,7 @@ async function deletePlayer(id) {
   try {
     await api(`/api/players/${id}`, { method: 'DELETE' });
     cachedPlayers = [];
+    invalidatePlayerQueryCache();
     loadPlayerList();
   } catch (e) { alert('删除失败: ' + e.message); }
 }
@@ -169,6 +188,7 @@ async function editPlayer(id) {
   try {
     await api(`/api/players/${id}`, { method: 'PUT', body: JSON.stringify(body) });
     cachedPlayers = [];
+    invalidatePlayerQueryCache();
     loadPlayerList();
   } catch (e) { alert('修改失败: ' + e.message); }
 }
@@ -184,6 +204,7 @@ async function addPlayer() {
     document.getElementById('player-real-name').value = '';
     document.getElementById('player-gender').value = '';
     cachedPlayers = [];
+    invalidatePlayerQueryCache();
     loadPlayerList();
   } catch (e) { alert(e.message); }
 }
@@ -235,13 +256,24 @@ async function initMatchPage() {
 // ==================== Tournament Icon ====================
 let cachedTournaments = [];
 
-// 压缩成正方形 256x256 的 JPEG：查询页图标格子现在放大到 110px，高清屏物理像素要 220+，
-// 128 的旧尺寸会被浏览器放大导致模糊（2026-10-16 用户反馈图标糊就是这个原因）
+// 赛事图标统一压缩成正方形 JPEG（居中裁剪 + 白底）。
+//
+// 尺寸演变：
+//   128 → 256（2026-10-16 首次修复）→ 512（2026-10-16 二次修复）
+//
+// 为什么最终定 512：图标最大展示处是查询页赛事格子 .tour-tile img，
+// 2026-10-16 放大版式后上限 180px。在 125% 系统缩放下要 225 个物理像素，
+// 512 对 225 有 2.28x 余量；256 只剩 1.14x，边缘会发虚。
+// 单张 JPEG(q0.92) 实测 40~80KB，7 个赛事全量也就几百 KB，完全可接受。
+const ICON_SIZE = 512;
+
+// 存量图标只有 128x128（早年旧代码压的），必须重新上传高清原图才能恢复细节。
+// 这里只负责把新上传的图统一转成 ICON_SIZE 的 JPEG。
 function compressIcon(dataUrl) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = function () {
-      const SIZE = 256;
+      const SIZE = ICON_SIZE;
       const canvas = document.createElement('canvas');
       canvas.width = SIZE;
       canvas.height = SIZE;
@@ -249,9 +281,12 @@ function compressIcon(dataUrl) {
       // 先铺白底，透明 PNG 转 JPEG 才不会变黑
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, SIZE, SIZE);
+      // 保持宽高比居中裁剪成正方形
       const side = Math.min(img.width, img.height);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, SIZE, SIZE);
-      resolve(canvas.toDataURL('image/jpeg', 0.9));
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
@@ -274,12 +309,22 @@ async function uploadTournamentIcon(input) {
       reader.onerror = rej;
       reader.readAsDataURL(file);
     });
+    // 源图太小的直接拦下来：放大只会更糊，不如让用户换原图。
+    // 这正是 128×128 存量图标的病根——被浏览器放大到 110px+ 后边缘全糊。
+    const srcSize = await getImageSize(dataUrl);
+    if (srcSize && Math.min(srcSize.w, srcSize.h) < ICON_SIZE) {
+      const go = confirm(
+        `这张图只有 ${srcSize.w}×${srcSize.h}，小于图标标准尺寸 ${ICON_SIZE}×${ICON_SIZE}，\n` +
+        `放大后边缘会偏糊。\n\n仍要使用吗？（建议换更大的原图）`
+      );
+      if (!go) { input.value = ''; status.textContent = ''; return; }
+    }
     const icon = await compressIcon(dataUrl);
     await api(`/api/tournaments/${tid}/icon`, { method: 'POST', body: JSON.stringify({ icon }) });
     const t = cachedTournaments.find(x => String(x.id) === String(tid));
     if (t) t.icon = icon;
     status.style.color = '#38a169';
-    status.textContent = '✓ 已保存 (' + Math.round(icon.length / 1024) + 'KB)';
+    status.textContent = `✓ 已保存 ${ICON_SIZE}×${ICON_SIZE} (${Math.round(icon.length / 1024)}KB)`;
     renderTournamentIcon();
     setTimeout(() => { status.textContent = ''; }, 3000);
   } catch (e) {
@@ -287,6 +332,16 @@ async function uploadTournamentIcon(input) {
     status.textContent = '上传失败: ' + e.message;
   }
   input.value = '';
+}
+
+// 读取图片原始像素尺寸，用于上传前的清晰度校验（读不到尺寸不阻断流程）
+function getImageSize(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
 }
 
 async function removeTournamentIcon() {
@@ -1177,7 +1232,7 @@ let tourIconById = {};
 let tourIconByName = {};
 let queryTournaments = [];
 
-// 赛事图标按钮网格：点击某个赛事才加载它的最新赛况（不再一次性铺开所有赛事）
+// 赛事图标按钮网格：点击某个赛事跳转到独立详情页（不再在原网格下方就地展开）
 function renderTourGrid() {
   const g = document.getElementById('query-tour-grid');
   if (!g) return;
@@ -1188,15 +1243,27 @@ function renderTourGrid() {
     </div>`).join('');
 }
 
+// 跳到某个赛事的详情页（独立 tab），并同步 URL 的 ?tid= 便于刷新/分享
 async function showTournamentLatest(tid) {
-  document.querySelectorAll('.tour-tile').forEach(el => el.classList.toggle('active', el.dataset.tid === String(tid)));
-  const sel = document.getElementById('query-tournament');
-  const ed = document.getElementById('query-edition');
-  if (sel) sel.value = String(tid);
-  if (ed) ed.value = '';
-  updateQueryTourIcon();
+  const t = queryTournaments.find(x => String(x.id) === String(tid));
+  if (!t) return;
 
-  const el = document.getElementById('query-results');
+  // 同步 URL：replaceState 不产生历史记录，返回键行为完全由我们的按钮控制
+  const url = new URL(location.href);
+  url.searchParams.set('tid', tid);
+  history.replaceState(null, '', url);
+  // 切换视图：隐藏查询列表，显示详情页；顶部导航保持"赛事查询"高亮
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-tour-detail').classList.add('active');
+
+  // 详情页头部：图标 + 标题
+  const iconSlot = document.getElementById('detail-tour-icon');
+  iconSlot.innerHTML = t.icon
+    ? `<img class="query-tour-icon" src="${t.icon}" alt="">`
+    : `<span class="query-tour-icon query-tour-icon-ph">${htmlEsc((t.name || '?')[0])}</span>`;
+  document.getElementById('detail-tour-title').textContent = t.name;
+
+  const el = document.getElementById('tour-detail-body');
   el.innerHTML = '<div class="loading">加载中...</div>';
   try {
     await ensurePlayers();
@@ -1208,6 +1275,26 @@ async function showTournamentLatest(tid) {
     el.innerHTML = `<div class="card"><div class="loading" style="color:#e53e3e">加载失败: ${e.message}</div></div>`;
   }
 }
+
+// 从详情页返回赛事列表页：清掉 URL 上的 ?tid=，并重新初始化网格
+function closeTourDetail() {
+  clearTidParam();
+
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-query').classList.add('active');
+  document.querySelectorAll('.nav-links a').forEach(a => a.classList.toggle('active', a.dataset.tab === 'query'));
+  initQueryPage();
+}
+
+// 兼容浏览器/手机自带的返回手势：popstate 时按 URL 上的 ?tid= 决定停在哪个视图。
+// 我们只用 replaceState 改 URL，所以用户按浏览器返回通常会退回进入本站前的页面；
+// 但若他手动改了地址或从深链进来，这里能兜住。
+window.addEventListener('popstate', () => {
+  const tid = new URLSearchParams(location.search).get('tid');
+  if (tid) { showTournamentLatest(tid); }
+  else if (document.getElementById('tab-tour-detail').classList.contains('active')) { closeTourDetail(); }
+});
+
 function updateQueryTourIcon() {
   const sel = document.getElementById('query-tournament');
   const box = document.getElementById('query-tour-icon');
@@ -1345,24 +1432,81 @@ async function deleteRound(rid) {
 }
 
 // ==================== Player Query ====================
+// 选手查询页默认只显示「参加过 >= PLAYER_MIN_EDITIONS 届」的选手，
+// 其余选手折叠在底部，点提示条才展开。阈值调这里。
+const PLAYER_MIN_EDITIONS = 5;
+let playerListExpanded = false;
+let playerQueryCache = null;
+
+// 选手输入联想的数据缓存（对阵查询/选手查询共用）。
+// 声明放在这里而不是"选手输入联想"那一段，是为了让上面的 invalidate 函数
+// 在任何调用时机都不会踩到 let 的暂时性死区。
+let suggestPlayers = null;
+let suggestLoading = null;
+
+// 选手增删改或录了比赛之后调用，保证下次进列表时重新拉取届数
+function invalidatePlayerQueryCache() {
+  playerQueryCache = null;
+  suggestPlayers = null;   // 联想数据同源，一并失效
+}
+
 async function loadPlayerQueryList() {
   const el = document.getElementById('player-result');
   document.getElementById('query-player-name').value = '';
+  el.innerHTML = '<div class="loading">加载中...</div>';
   try {
-    const players = await api('/api/players');
-    let html = `<div class="player-grid">`;
-    for (const p of players) {
-      const dn = displayName(p);
-      const extra = dn !== p.name ? ` <small style="color:#718096;font-size:12px">(${p.name})</small>` : '';
-      html += `<div class="player-card" onclick="showPlayerDetail('${p.name.replace(/'/g, "\\'")}')">
-        <div class="player-avatar-wrap">${p.avatar ? `<img src="${p.avatar}" class="player-avatar-img">` : `<div class="player-avatar-placeholder">${p.name[0]}</div>`}</div>
-        <div class="player-name"><strong>${dn}</strong>${extra}</div>
-        <div class="player-gender">${p.gender === 'male' ? '男' : '女'}</div>
-      </div>`;
-    }
-    html += `</div>`;
-    el.innerHTML = html;
+    // 缓存一次，展开/收起时不必重复请求。
+    // 缓存由 invalidatePlayerQueryCache() 失效，且每次进入本标签页都会强制刷新，
+    // 所以「录完比赛再来看」拿到的一定是新的届数。
+    if (!playerQueryCache) playerQueryCache = await api('/api/players/with-editions');
+    renderPlayerQueryList();
   } catch (e) { el.innerHTML = `<div class="card"><div class="loading">加载失败</div></div>`; }
+}
+
+// 进入选手查询页时调用：强制重拉（录比赛/改选手后届数会变）
+function reloadPlayerQueryList() {
+  invalidatePlayerQueryCache();
+  playerListExpanded = false;
+  return loadPlayerQueryList();
+}
+
+function playerCardHtml(p) {
+  const dn = displayName(p);
+  const extra = dn !== p.name ? ` <small style="color:#718096;font-size:12px">(${p.name})</small>` : '';
+  const meta = [p.gender === 'male' ? '男' : '女'];
+  if (typeof p.editions === 'number') meta.push(`${p.editions} 届`);
+  return `<div class="player-card" data-editions="${p.editions || 0}" onclick="showPlayerDetail('${p.name.replace(/'/g, "\\'")}')">
+    <div class="player-avatar-wrap">${p.avatar ? `<img src="${p.avatar}" class="player-avatar-img">` : `<div class="player-avatar-placeholder">${p.name[0]}</div>`}</div>
+    <div class="player-name"><strong>${dn}</strong>${extra}</div>
+    <div class="player-gender">${meta.join(' · ')}</div>
+  </div>`;
+}
+
+function renderPlayerQueryList() {
+  const el = document.getElementById('player-result');
+  const all = playerQueryCache || [];
+  // 届数多的排前面，同届数按姓名 —— 让首页列表本身就是「核心选手榜」
+  const sorted = all.slice().sort((a, b) => (b.editions || 0) - (a.editions || 0) || a.name.localeCompare(b.name, 'zh'));
+  const main = sorted.filter(p => (p.editions || 0) >= PLAYER_MIN_EDITIONS);
+  const rest = sorted.filter(p => (p.editions || 0) < PLAYER_MIN_EDITIONS);
+
+  let html = '<div class="player-grid">';
+  html += main.map(playerCardHtml).join('');
+  if (playerListExpanded) html += rest.map(playerCardHtml).join('');
+  html += '</div>';
+
+  // 底部提示条：还有多少人被折叠。已展开则变成「收起」
+  if (rest.length) {
+    html += playerListExpanded
+      ? `<div class="rank-more" onclick="togglePlayerListExpand()">▲ 收起，仅显示参加过 ${PLAYER_MIN_EDITIONS} 届及以上的选手</div>`
+      : `<div class="rank-more" onclick="togglePlayerListExpand()">▼ 仅显示参加过 ${PLAYER_MIN_EDITIONS} 届及以上的选手（${main.length} 位），还有 ${rest.length} 位 · 点击查看所有选手</div>`;
+  }
+  el.innerHTML = html;
+}
+
+function togglePlayerListExpand() {
+  playerListExpanded = !playerListExpanded;
+  renderPlayerQueryList();
 }
 
 async function queryPlayer() {
@@ -1373,6 +1517,152 @@ async function queryPlayer() {
 
 let currentViewedPlayer = '';
 
+// ==================== 选手详情：四项数据模块 ====================
+// 布局（从左到右）：[总场次 + 胜场] [胜率] [荣誉] [最高排名]
+// 荣誉模块只放「门面」一条：最高级别的冠军；没冠军退亚军，再没退季军，
+// 三项都空则显示"暂无"。点击整块跳转到该选手的荣誉清单页。
+
+// 与后端 pickTopHonor 同规则的前端兜底实现（后端已排好序，这里只做挑拣）
+function pickTopHonorClient(honors) {
+  if (!honors || !honors.length) return null;
+  for (const tier of [1, 2, 3]) {
+    const hit = honors.find(h => h.tier === tier);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function summarizeHonorsClient(honors) {
+  const s = { gold: 0, silver: 0, bronze: 0, total: 0 };
+  for (const h of honors || []) {
+    if (h.tier === 1) s.gold++;
+    else if (h.tier === 2) s.silver++;
+    else if (h.tier === 3) s.bronze++;
+  }
+  s.total = s.gold + s.silver + s.bronze;
+  return s;
+}
+
+// 荣誉模块内容：左边放大版赛事图标，右边上「赛事名」下「冠/亚/季」。
+// 刻意不显示「第N届」——空间让给图标和赛事名，届数在荣誉清单页里有。
+function honorModuleInner(topHonor) {
+  if (!topHonor) {
+    return `<div class="stat-honor-empty">暂无</div><div class="stat-label">荣誉</div>`;
+  }
+  const icon = topHonor.tournament_icon
+    ? `<img class="stat-honor-icon" src="${topHonor.tournament_icon}" alt="">`
+    : `<span class="stat-honor-icon stat-honor-icon-ph">${HONOR_FALLBACK_ICON}</span>`;
+  const tierCls = 'stat-honor-tier tier-' + topHonor.tier;
+  return `<div class="stat-honor-line">
+      ${icon}
+      <div class="stat-honor-text">
+        <div class="stat-honor-title">${htmlEsc(topHonor.tournament_name)}</div>
+        <div class="stat-honor-sub"><span class="${tierCls}">${topHonor.tier_icon}${htmlEsc(topHonor.tier_label)}</span></div>
+      </div>
+    </div>
+    <div class="stat-label">荣誉</div>`;
+}
+
+// 胜率圆环：用 conic-gradient 画红/绿两段。
+// 绿=胜、红=负（注意这是「胜负比例」不是股价涨跌，不受 A 股红涨绿跌惯例约束；
+// 这里沿用胜利=绿的通用体育配色，与页面其它「胜/负」用色一致）。
+function winRateRingHtml(winRate, totalMatches, totalWins) {
+  const pct = Math.max(0, Math.min(100, Number(winRate) || 0));
+  const losses = Math.max(0, (totalMatches || 0) - (totalWins || 0));
+  const title = `胜 ${totalWins || 0} · 负 ${losses} 场`;
+  return `<div class="wr-ring" style="--wr:${pct}%" title="${title}">
+      <div class="wr-ring-hole">
+        <div class="wr-ring-value">${pct}<small class="stat-unit">%</small></div>
+      </div>
+    </div>
+    <div class="stat-label">胜率</div>`;
+}
+
+function statModulesHtml(s, summary, topHonor, playerName) {
+  const rankTxt = s.best_rank ? '第' + s.best_rank + '名' : '无';
+  const safeName = String(playerName).replace(/'/g, "\\'");
+  return `<div class="stat-modules">
+    <div class="stat-mod stat-mod-cnt">
+      <div class="stat-sub"><div class="stat-sub-value">${s.total_matches}</div><div class="stat-sub-label">总场次</div></div>
+      <div class="stat-sub"><div class="stat-sub-value">${s.total_wins}</div><div class="stat-sub-label">胜场</div></div>
+    </div>
+    <div class="stat-mod">
+      ${winRateRingHtml(s.win_rate, s.total_matches, s.total_wins)}
+    </div>
+    <div class="stat-mod stat-mod-honor" onclick="showPlayerHonors('${safeName}')" title="查看全部荣誉">
+      ${honorModuleInner(topHonor)}
+      <span class="stat-honor-arrow" aria-hidden="true"></span>
+    </div>
+    <div class="stat-mod">
+      <div class="stat-value">${rankTxt}</div>
+      <div class="stat-label">最高排名</div>
+    </div>
+  </div>`;
+}
+
+// ==================== 个人荣誉清单页 ====================
+async function showPlayerHonors(name) {
+  const el = document.getElementById('player-result');
+  el.innerHTML = '<div class="loading">查询中...</div>';
+  try {
+    const data = await api(`/api/player/${encodeURIComponent(name)}/honors`);
+    const p = data.player, sum = data.summary, honors = data.honors || [];
+
+    // 按「冠军组 → 亚军组 → 季军组」分开渲染，组内已是「级别降序 + 同级近的在前」
+    const groups = [
+      { tier: 1, title: '🏆 冠军', cls: 'gold' },
+      { tier: 2, title: '🥈 亚军', cls: 'silver' },
+      { tier: 3, title: '🥉 季军', cls: 'bronze' }
+    ];
+
+    let body = '';
+    for (const g of groups) {
+      const list = honors.filter(h => h.tier === g.tier);
+      if (!list.length) continue;
+      body += `<div class="honor-group">
+        <div class="honor-group-head ${g.cls}">
+          <span>${g.title}</span><span class="honor-group-count">${list.length}</span>
+        </div>
+        ${list.map(honorRowHtml).join('')}
+      </div>`;
+    }
+
+    el.innerHTML = `
+      <button onclick="showPlayerDetail('${String(p.name).replace(/'/g, "\\'")}')" style="margin-bottom:12px;font-size:13px;padding:4px 12px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">← 返回选手资料</button>
+      <div class="player-stat-card">
+        <h3 style="margin:0 0 4px">🏅 ${htmlEsc(p.real_name || p.name)} 的荣誉</h3>
+        <div class="honor-summary">
+          <span class="honor-chip gold">🏆 冠军 ${sum.gold}</span>
+          <span class="honor-chip silver">🥈 亚军 ${sum.silver}</span>
+          <span class="honor-chip bronze">🥉 季军 ${sum.bronze}</span>
+          <span class="honor-chip total">合计 ${sum.total}</span>
+        </div>
+        ${body || '<div class="loading" style="padding:24px 0">这位选手还没有获得过前三名</div>'}
+      </div>`;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    el.innerHTML = `<div class="card"><div class="loading">加载失败：${htmlEsc(e.message)}</div></div>`;
+  }
+}
+
+function honorRowHtml(h) {
+  const icon = h.tournament_icon
+    ? `<img class="honor-row-icon" src="${h.tournament_icon}" alt="">`
+    : `<span class="honor-row-icon honor-row-icon-ph">${HONOR_FALLBACK_ICON}</span>`;
+  const partner = h.partner_name ? `<span class="honor-partner">搭档 ${htmlEsc(h.partner_name)}</span>` : '';
+  return `<div class="honor-row">
+    ${icon}
+    <div class="honor-row-main">
+      <div class="honor-row-title">${htmlEsc(h.tournament_name)} <small>第${h.edition}届</small></div>
+      <div class="honor-row-meta">${h.date || ''}${partner ? ' · ' : ''}${partner}</div>
+    </div>
+    <div class="honor-row-right">
+      <span class="honor-tier-badge tier-${h.tier}">${h.tier_icon}${htmlEsc(h.tier_label)}</span>
+      <span class="honor-level">L${h.level}</span>
+    </div>
+  </div>`;
+}
+
 async function showPlayerDetail(name) {
   currentViewedPlayer = name;
   const el = document.getElementById('player-result');
@@ -1380,6 +1670,18 @@ async function showPlayerDetail(name) {
   try {
     const data = await api(`/api/player/${encodeURIComponent(name)}`);
     const p = data.player, s = data.stats;
+    // 荣誉：优先用详情接口随行返回的；老接口没带就补拉一次，保证布局不塌
+    let honors = data.honors || null;
+    let honorSummary = data.honor_summary || null;
+    let topHonor = data.top_honor || null;
+    if (!honors) {
+      try {
+        const hd = await api(`/api/player/${encodeURIComponent(p.name)}/honors`);
+        honors = hd.honors; honorSummary = hd.summary; topHonor = pickTopHonorClient(honors);
+      } catch (e) { honors = []; honorSummary = { gold: 0, silver: 0, bronze: 0, total: 0 }; }
+    }
+    if (!honorSummary) honorSummary = summarizeHonorsClient(honors);
+    if (!topHonor) topHonor = pickTopHonorClient(honors);
     let html = `<button onclick="loadPlayerQueryList()" style="margin-bottom:12px;font-size:13px;padding:4px 12px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">← 返回列表</button>
     <div class="player-stat-card">
       <div style="display:flex;align-items:center;gap:16px">
@@ -1392,12 +1694,7 @@ async function showPlayerDetail(name) {
           <div style="margin-top:8px;font-size:13px;color:#718096">点击头像更换</div>
         </div>
       </div>
-      <div class="stat-grid" style="margin-top:16px">
-        <div class="stat-item"><div class="stat-value">${s.total_matches}</div><div class="stat-label">总场次</div></div>
-        <div class="stat-item"><div class="stat-value">${s.total_wins}</div><div class="stat-label">总胜场</div></div>
-        <div class="stat-item"><div class="stat-value">${s.win_rate || 0}%</div><div class="stat-label">胜率</div></div>
-        <div class="stat-item"><div class="stat-value">${s.best_rank ? '第' + s.best_rank + '名' : '无'}</div><div class="stat-label">最高排名</div></div>
-      </div>
+      ${statModulesHtml(s, honorSummary, topHonor, p.name)}
     </div>`;
 
     html += `<div class="card">
@@ -1651,6 +1948,149 @@ function goToPlayer(name) {
   document.getElementById('tab-player-query').classList.add('active');
   showPlayerDetail(name);
 }
+
+// ==================== 选手输入联想（对阵查询 / 选手查询共用） ====================
+// 数据源用 /api/players（62 人的量级，一次全量拉到内存足够；将来上千再改服务端搜索）。
+// 匹配规则：姓名(real_name)、比赛ID(name) 任一命中即可，前缀命中优先。
+// 缓存变量 suggestPlayers / suggestLoading 声明在"选手查询"段，见那里的注释。
+const suggestState = {};   // inputId -> { items, active }
+
+async function ensureSuggestPlayers() {
+  if (suggestPlayers) return suggestPlayers;
+  if (!suggestLoading) {
+    suggestLoading = api('/api/players')
+      .then(list => { suggestPlayers = list; return list; })
+      .catch(() => { suggestPlayers = []; return []; })
+      .finally(() => { suggestLoading = null; });
+  }
+  return suggestLoading;
+}
+
+// 把命中片段包一层高亮；输入先转义再拼接，避免 XSS
+function hl(text, q) {
+  const t = String(text == null ? '' : text);
+  if (!q) return htmlEsc(t);
+  const i = t.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return htmlEsc(t);
+  return htmlEsc(t.slice(0, i)) +
+    `<span class="ac-hl">${htmlEsc(t.slice(i, i + q.length))}</span>` +
+    htmlEsc(t.slice(i + q.length));
+}
+
+function matchPlayers(q) {
+  const all = suggestPlayers || [];
+  const k = q.trim().toLowerCase();
+  if (!k) {
+    // 空输入：按姓名排序给前 20 个，方便直接挑
+    return all.slice(0, 20);
+  }
+  const starts = [], contains = [];
+  for (const p of all) {
+    const real = String(p.real_name || '').toLowerCase();
+    const name = String(p.name || '').toLowerCase();
+    const s = real.startsWith(k) || name.startsWith(k);
+    if (s) starts.push(p);
+    else if (real.includes(k) || name.includes(k)) contains.push(p);
+  }
+  // 前缀命中排在包含命中之前
+  return starts.concat(contains).slice(0, 20);
+}
+
+async function onPlayerSuggest(inputId) {
+  const input = document.getElementById(inputId);
+  const list = document.getElementById('ac-' + inputId);
+  if (!input || !list) return;
+  await ensureSuggestPlayers();
+
+  const q = input.value;
+  const items = matchPlayers(q);
+  suggestState[inputId] = { items, active: -1 };
+
+  if (!items.length) {
+    list.innerHTML = `<div class="ac-empty">没找到匹配的选手</div>`;
+    list.classList.add('open');
+    return;
+  }
+  list.innerHTML = items.map((p, i) => {
+    const real = p.real_name || '';
+    const dn = displayName(p);
+    // 姓名 + 比赛ID：有备注名时两者都显示，没有时只显示ID（此时二者相同，不重复展示）
+    const namePart = hl(dn, q);
+    const idPart = real && real !== p.name ? `<span class="ac-id">${hl(p.name, q)}</span>` : '';
+    return `<div class="ac-item" data-i="${i}" onmousedown="pickPlayerSuggest(event, '${inputId}', ${i})">
+      <span class="ac-name">${namePart}</span>${idPart}</div>`;
+  }).join('');
+  list.classList.add('open');
+}
+
+function pickPlayerSuggest(ev, inputId, idx) {
+  ev.preventDefault();   // 防止 blur 先触发导致列表提前关闭
+  const st = suggestState[inputId];
+  if (!st || !st.items[idx]) return;
+  const p = st.items[idx];
+  const input = document.getElementById(inputId);
+  // 回填比赛ID：服务端按 name 或 real_name 都能查到，但 name 唯一、最稳妥
+  input.value = p.name;
+  closePlayerSuggest(inputId);
+}
+
+function closePlayerSuggest(inputId) {
+  const list = document.getElementById('ac-' + inputId);
+  if (list) list.classList.remove('open');
+  if (suggestState[inputId]) suggestState[inputId].active = -1;
+}
+
+function isSuggestOpen(inputId) {
+  const list = document.getElementById('ac-' + inputId);
+  return !!(list && list.classList.contains('open'));
+}
+
+// 键盘上下键选择、Enter 确认、Esc 关闭。
+// 返回 true 表示这次按键已被联想逻辑消费，外层不应再执行默认动作（如提交查询）。
+function onPlayerSuggestKey(ev, inputId) {
+  const st = suggestState[inputId];
+  const list = document.getElementById('ac-' + inputId);
+  if (!list || !list.classList.contains('open') || !st || !st.items.length) return false;
+  const n = st.items.length;
+  if (ev.key === 'ArrowDown') {
+    ev.preventDefault();
+    st.active = (st.active + 1) % n;
+    paintActive(inputId);
+    return true;
+  } else if (ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    st.active = (st.active - 1 + n) % n;
+    paintActive(inputId);
+    return true;
+  } else if (ev.key === 'Enter') {
+    // 没手动选中任何一个时，默认取第一条 —— 避免"列表开着但 Enter 没反应"
+    const idx = st.active >= 0 ? st.active : 0;
+    ev.preventDefault();
+    pickPlayerSuggest(ev, inputId, idx);
+    return true;
+  } else if (ev.key === 'Escape') {
+    closePlayerSuggest(inputId);
+    return true;
+  }
+  return false;
+}
+
+function paintActive(inputId) {
+  const st = suggestState[inputId];
+  const list = document.getElementById('ac-' + inputId);
+  if (!list || !st) return;
+  list.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === st.active));
+  const cur = list.querySelector('.ac-item.active');
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+
+// 点击页面空白处收起下拉
+document.addEventListener('click', e => {
+  for (const id of Object.keys(suggestState)) {
+    const wrap = document.getElementById('ac-' + id);
+    if (wrap && !wrap.contains(e.target) && e.target.id !== id) closePlayerSuggest(id);
+  }
+});
 
 // ==================== Head to Head ====================
 async function queryHeadToHead() {
@@ -1906,3 +2346,21 @@ async function authChangeSecInline() {
 
 // ==================== Init ====================
 loadHome();
+
+// 支持直接带 ?tid= 打开赛事详情（刷新/分享链接不丢当前赛事）。
+// 放在 loadHome 之后异步跑，不阻塞首页渲染。
+(async function initFromUrl() {
+  const tid = new URLSearchParams(location.search).get('tid');
+  if (!tid) return;
+  try {
+    const tournaments = await api('/api/tournaments');
+    queryTournaments = tournaments;
+    tourIconById = Object.fromEntries(tournaments.filter(t => t.icon).map(t => [String(t.id), t.icon]));
+    tourIconByName = Object.fromEntries(tournaments.filter(t => t.icon).map(t => [t.name, t.icon]));
+    await ensurePlayers();
+    if (tournaments.some(t => String(t.id) === String(tid))) {
+      document.querySelectorAll('.nav-links a').forEach(a => a.classList.toggle('active', a.dataset.tab === 'query'));
+      await showTournamentLatest(tid);
+    }
+  } catch (e) { /* 深链失败就静默留在首页，不打扰用户 */ }
+})();

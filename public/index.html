@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>羽毛球积分系统</title>
-  <link rel="stylesheet" href="/style.css?v=25">
+  <link rel="stylesheet" href="/style.css?v=32">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
 </head>
 <body>
@@ -141,7 +141,7 @@
       <div id="rankings-content"><div class="loading">加载中...</div></div>
     </div>
 
-    <!-- 赛事查询 -->
+    <!-- 赛事查询：图标网格列表页 -->
     <div id="tab-query" class="tab">
       <div class="query-head">
         <span id="query-tour-icon" class="query-tour-icon-slot"></span>
@@ -160,12 +160,30 @@
       <div id="query-results"></div>
     </div>
 
+    <!-- 赛事详情：点图标后跳转到这里，取代原先在网格下方展开的做法 -->
+    <div id="tab-tour-detail" class="tab">
+      <div class="detail-head">
+        <button class="back-btn" onclick="closeTourDetail()" title="返回赛事列表">
+          <span class="back-arrow" aria-hidden="true"></span>返回
+        </button>
+        <span id="detail-tour-icon" class="query-tour-icon-slot"></span>
+        <h2 id="detail-tour-title">赛事详情</h2>
+      </div>
+      <div id="tour-detail-body"></div>
+    </div>
+
     <!-- 选手查询 -->
     <div id="tab-player-query" class="tab">
       <h2>🔍 选手查询</h2>
       <div class="card">
         <div class="form-row">
-          <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名" onkeydown="if(event.key==='Enter')queryPlayer()">
+          <div class="ac-wrap">
+            <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名" autocomplete="off"
+                   oninput="onPlayerSuggest('query-player-name')"
+                   onfocus="onPlayerSuggest('query-player-name')"
+                   onkeydown="if(onPlayerSuggestKey(event,'query-player-name'))return; if(event.key==='Enter')queryPlayer()">
+            <div class="ac-list" id="ac-query-player-name"></div>
+          </div>
           <button onclick="queryPlayer()">查询</button>
         </div>
       </div>
@@ -177,8 +195,20 @@
       <h2>⚔️ 对阵查询</h2>
       <div class="card">
         <div class="form-row">
-          <input type="text" id="h2h-name1" placeholder="选手A姓名">
-          <input type="text" id="h2h-name2" placeholder="选手B姓名">
+          <div class="ac-wrap">
+            <input type="text" id="h2h-name1" placeholder="选手A姓名" autocomplete="off"
+                   oninput="onPlayerSuggest('h2h-name1')"
+                   onfocus="onPlayerSuggest('h2h-name1')"
+                   onkeydown="onPlayerSuggestKey(event, 'h2h-name1')">
+            <div class="ac-list" id="ac-h2h-name1"></div>
+          </div>
+          <div class="ac-wrap">
+            <input type="text" id="h2h-name2" placeholder="选手B姓名" autocomplete="off"
+                   oninput="onPlayerSuggest('h2h-name2')"
+                   onfocus="onPlayerSuggest('h2h-name2')"
+                   onkeydown="onPlayerSuggestKey(event, 'h2h-name2')">
+            <div class="ac-list" id="ac-h2h-name2"></div>
+          </div>
           <button onclick="queryHeadToHead()">查询</button>
         </div>
       </div>
@@ -199,6 +229,6 @@
     </div>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
-  <script src="/app.js?v=26"></script>
+  <script src="/app.js?v=34"></script>
 </body>
 </html>

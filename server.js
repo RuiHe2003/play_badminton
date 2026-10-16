@@ -35,6 +35,9 @@ function query(sql, params = []) {
   stmt.step();
   stmt.free();
   saveDatabase();
+  // 任何写操作都让荣誉缓存失效：荣誉是全量排名推导出来的，录一场比赛就可能翻盘。
+  // 挂钩在这里而不是散落在各写接口里 —— 以后新加写接口不会漏掉。
+  honorsCache = null;
   return null;
 }
 
@@ -42,6 +45,30 @@ function query(sql, params = []) {
 
 app.get('/api/players', (req, res) => {
   res.json(query('SELECT id, name, gender, real_name, avatar FROM players ORDER BY name'));
+});
+
+// 选手查询页的列表：附带每人「参加赛事届数」。
+// 这里的「届」= 该选手实际出场过的 round 所属的 distinct (tournament_id, edition)。
+// 同一赛事同一届打了多轮只算 1 届 —— 这是产品口径，不要改成按场次计。
+// 单独开一个接口而不是往 /api/players 里加字段：后者被首页/管理端等多处复用，
+// 加字段会让那些地方白白多背一次聚合查询的开销。
+app.get('/api/players/with-editions', (req, res) => {
+  const players = query('SELECT id, name, gender, real_name, avatar FROM players ORDER BY name');
+  const rows = query(`
+    SELECT DISTINCT t.player1_id AS pid, r.tournament_id AS tid, r.edition AS ed
+    FROM (SELECT round_id, player1_id FROM teams
+          UNION ALL
+          SELECT round_id, player2_id FROM teams WHERE player2_id IS NOT NULL) t
+    JOIN rounds r ON r.id = t.round_id
+    WHERE t.player1_id IS NOT NULL
+  `);
+  // 按选手聚合成 Set，再取 size —— 即该选手参加过的届数
+  const byPlayer = {};
+  for (const row of rows) {
+    if (!byPlayer[row.pid]) byPlayer[row.pid] = new Set();
+    byPlayer[row.pid].add(row.tid + '-' + row.ed);
+  }
+  res.json(players.map(p => ({ ...p, editions: byPlayer[p.id] ? byPlayer[p.id].size : 0 })));
 });
 
 app.post('/api/players', (req, res) => {
@@ -692,6 +719,122 @@ app.get('/api/query/round/:roundId', (req, res) => {
     WHERE m.round_id = ?
   `, [round.id]);
   res.json({ ...round, teams, ranking, matches });
+});
+
+// ==================== Honors（荣誉：冠/亚/季） ====================
+// 荣誉口径（产品定义，别改）：
+//   把每一轮(round)按赛事类型排名，取前 3 名，对应 冠军/亚军/季军。
+//   - 常规赛事（含双打）：按「队」排名，队里两名选手共享该名次。
+//   - 狗王杯：轮内按「个人」排名（calculatePlayerRankings），只取男选手 —— 与
+//     个人资料页的胜场/场次口径完全一致，避免两处数字打架。
+//   同一级别多冠时取"最近一届"作为门面展示，见 pickTopHonor()。
+// 数据现状：25 轮，每 (赛事,届) 恰好 1 轮，所以无需按届再聚合；
+// 将来若出现一届多轮，需把这里改成按 (tournament_id, edition) 取最好名次。
+const HONOR_ICON = { 1: '🏆', 2: '🥈', 3: '🥉' };
+const HONOR_LABEL = { 1: '冠军', 2: '亚军', 3: '季军' };
+
+// 算一次全量荣誉，按 player_id 归集。调用方（个人页/全站榜）自行裁剪。
+function computeAllHonors() {
+  const rounds = query(`
+    SELECT r.id, r.edition, r.level, r.date, r.tournament_id,
+           t.name AS tournament_name, t.type AS tournament_type, t.icon AS tournament_icon
+    FROM rounds r JOIN tournaments t ON r.tournament_id = t.id
+    ORDER BY r.id
+  `);
+
+  const byPlayer = {};
+  const push = (pid, rec) => {
+    if (!pid) return;
+    if (!byPlayer[pid]) byPlayer[pid] = [];
+    byPlayer[pid].push(rec);
+  };
+
+  for (const rd of rounds) {
+    const isFree = rd.tournament_name === '狗王杯';
+    const { rankings } = isFree
+      ? calculatePlayerRankings(rd.id, rd.level)
+      : calculateRoundRankings(rd.id, rd.level);
+    for (const row of rankings) {
+      if (row.rank > 3) continue;   // 只关心前三
+      const base = {
+        tier: row.rank,
+        tier_label: HONOR_LABEL[row.rank],
+        tier_icon: HONOR_ICON[row.rank],
+        tournament_id: rd.tournament_id,
+        tournament_name: rd.tournament_name,
+        tournament_icon: rd.tournament_icon || '',
+        edition: rd.edition,
+        level: rd.level,
+        date: rd.date,
+        wins: row.wins,
+        losses: row.losses
+      };
+      if (isFree) {
+        push(row.player_id, { ...base, partner_name: null });
+      } else {
+        // 双打：奖给队里两个人，互相记为搭档
+        const ids = [row.player1_id, row.player2_id].filter(Boolean);
+        for (const pid of ids) {
+          const other = ids.find(x => x !== pid);
+          const op = other ? query('SELECT name, real_name FROM players WHERE id = ?', [other])[0] : null;
+          push(pid, { ...base, partner_name: op ? (op.real_name || op.name) : null });
+        }
+      }
+    }
+  }
+
+  // 排序：级别降序 → 同级别按时间近的在前（门面展示"同级取最近"依赖这个顺序）
+  for (const pid of Object.keys(byPlayer)) {
+    byPlayer[pid].sort((a, b) =>
+      (b.level - a.level) || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) || (b.edition - a.edition)
+    );
+  }
+  return byPlayer;
+}
+
+// 从荣誉列表里挑"门面"：优先冠军(按级别最高、同级最近) → 无冠则亚军 → 无亚则季军。
+// 返回 null 表示这位选手还没有任何前三。
+function pickTopHonor(honors) {
+  if (!honors || !honors.length) return null;
+  for (const tier of [1, 2, 3]) {
+    const hit = honors.find(h => h.tier === tier);   // honors 已按级别+时间排好
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// 汇总每人冠/亚/季数量，供列表与详情共用
+function summarizeHonors(honors) {
+  const s = { gold: 0, silver: 0, bronze: 0, total: 0 };
+  for (const h of honors || []) {
+    if (h.tier === 1) s.gold++;
+    else if (h.tier === 2) s.silver++;
+    else if (h.tier === 3) s.bronze++;
+  }
+  s.total = s.gold + s.silver + s.bronze;
+  return s;
+}
+
+// 选手查询列表用：一次算出所有人的冠亚季 + 门面荣誉。
+// 单独开接口而不是塞进 /api/players/with-editions —— 那个接口被列表和联想复用，
+// 荣誉计算要跑全部 25 轮排名，开销大得多，不该让联想也跟着背。
+let honorsCache = null;
+app.get('/api/players/with-honors', (req, res) => {
+  const players = query('SELECT id, name, gender, real_name, avatar FROM players ORDER BY name');
+  if (!honorsCache) honorsCache = computeAllHonors();
+  res.json(players.map(p => {
+    const h = honorsCache[p.id] || [];
+    return { ...p, honors: summarizeHonors(h), top_honor: pickTopHonor(h) };
+  }));
+});
+
+// 个人荣誉清单页用：返回该选手全部荣誉（已按级别降序、同级近的在前）+ 汇总
+app.get('/api/player/:name/honors', (req, res) => {
+  let player = query('SELECT id, name, real_name FROM players WHERE name = ?', [req.params.name])[0];
+  if (!player) player = query('SELECT id, name, real_name FROM players WHERE real_name = ?', [req.params.name])[0];
+  if (!player) return res.status(404).json({ error: '选手不存在' });
+  const honors = computeAllHonors()[player.id] || [];
+  res.json({ player, honors, summary: summarizeHonors(honors) });
 });
 
 // ==================== Player Stats ====================
