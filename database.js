@@ -166,6 +166,21 @@ function migrateEventEditions() {
   addCol('events', 'seed_by', "TEXT NOT NULL DEFAULT 'entry'");
   addCol('events', 'group_mode', "TEXT NOT NULL DEFAULT 'snake'");
   addCol('events', 'ko_mode', "TEXT NOT NULL DEFAULT 'seed'");
+  // 败者组（决 5~8 名）。赛事层是「赛制默认」，届次层可单独覆盖 —— 空 = 跟随赛事默认。
+  addCol('events', 'lower_bracket', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('event_editions', 'lower_bracket', 'INTEGER');
+  // 非固搭双打：项目 + 对阵两侧各自的第二位搭档
+  addCol('events', 'free_kind', "TEXT NOT NULL DEFAULT 'md'");
+  addCol('event_ties', 'side1_entry2_id', 'INTEGER');
+  addCol('event_ties', 'side2_entry2_id', 'INTEGER');
+  // 种子排名定格值：生成分组 / 生成签表那一刻写入，之后比分引起的积分变化不会改动它，
+  // 否则赛后打开签表，种子号和当时的对阵逻辑会对不上（8 号赢了 1 号这种错觉）。
+  // 0 = 还没定格（读取时按当前积分实时算，名单变更后也会回到 0 重新算）。
+  addCol('event_entries', 'seed_rank', 'INTEGER NOT NULL DEFAULT 0');
+  // 淘汰赛身份标签（生成签表时写入）：小组+淘汰 = 小组名次「A1 / B2」；
+  // 纯淘汰 = 种子位数字。签表上优先显示它 —— group_ko 的半决赛是「小组第一 VS 另一组第二」，
+  // 显示种子号会让人以为种子错位，显示 A1/B2 才和对阵逻辑自洽。空 = 用种子号。
+  addCol('event_entries', 'qual_label', "TEXT NOT NULL DEFAULT ''");
 
   try {
     db.run('BEGIN');
@@ -173,10 +188,20 @@ function migrateEventEditions() {
     const list = evs.length ? evs[0].values.map(v => ({
       id: v[0], date: v[1], level: v[2], status: v[3], round_id: v[4]
     })) : [];
+    let migrated = 0;
     for (const e of list) {
       const r = db.exec(`SELECT COUNT(*) FROM event_editions WHERE event_id = ${e.id}`);
       const n = r.length ? r[0].values[0][0] : 0;
       if (n > 0) continue;                        // 已迁移过
+      // 只有「旧模型遗留数据」的赛事才补第 1 届：参赛单元/对抗还挂在 edition_id=0 上。
+      // 新建的空赛事（建了定义、还没建届）不能补：events.round_id 对新赛事永远是 NULL，
+      // 补出来的届没有镜像轮次，积分榜/荣誉/选手资料会静默丢数据。
+      // 2026-10-18 欣欣杯连续两次被这条迁移补成残壳届（round_id=NULL、created_at=''）。
+      const lg = db.exec(`SELECT
+        (SELECT COUNT(*) FROM event_entries WHERE event_id = ${e.id} AND edition_id = 0) +
+        (SELECT COUNT(*) FROM event_ties WHERE event_id = ${e.id} AND edition_id = 0) AS c`);
+      const lc = lg.length ? lg[0].values[0][0] : 0;
+      if (!lc) continue;
       const date = e.date ? `'${String(e.date).replace(/'/g, "''")}'` : "''";
       db.run(`INSERT INTO event_editions (event_id, edition, date, level, status, round_id, created_at)
               VALUES (${e.id}, 1, ${date}, ${e.level || 1000}, '${e.status || 'draft'}', ${e.round_id === null || e.round_id === undefined ? 'NULL' : e.round_id}, '')`);
@@ -185,9 +210,10 @@ function migrateEventEditions() {
       if (!edId) continue;
       db.run(`UPDATE event_entries SET edition_id = ${edId} WHERE event_id = ${e.id} AND edition_id = 0`);
       db.run(`UPDATE event_ties SET edition_id = ${edId} WHERE event_id = ${e.id} AND edition_id = 0`);
+      migrated++;
     }
     db.run('COMMIT');
-    if (list.length) console.log(`[migrate] 赛事已升级为「定义 + 届次」两层，迁移 ${list.length} 个赛事`);
+    if (migrated) console.log(`[migrate] 赛事已升级为「定义 + 届次」两层，迁移 ${migrated} 个赛事`);
   } catch (e) {
     try { db.run('ROLLBACK'); } catch (e2) {}
     console.error('[migrate] 赛事届次迁移失败，已回滚：', e.message);
@@ -218,6 +244,8 @@ function createEventTables() {
     date TEXT NOT NULL DEFAULT '',            -- 已废弃：日期改按届存
     icon TEXT DEFAULT '',
     third_place INTEGER NOT NULL DEFAULT 0,   -- 季军赛开关
+    lower_bracket INTEGER NOT NULL DEFAULT 0, -- 败者组开关（决 5~8 名）：只有本届正好 8 个参赛单元时才真的生成
+    free_kind TEXT NOT NULL DEFAULT 'md',     -- 非固搭双打的项目：md 男双 | wd 女双 | xd 混双
     group_count INTEGER NOT NULL DEFAULT 0,
     advance_per_group INTEGER NOT NULL DEFAULT 0,
     seed_by TEXT NOT NULL DEFAULT 'entry',        -- 种子依据：entry 录入顺序 | points 成员总积分之和
@@ -237,6 +265,7 @@ function createEventTables() {
     date TEXT NOT NULL DEFAULT '',
     level INTEGER NOT NULL DEFAULT 1000,
     status TEXT NOT NULL DEFAULT 'draft',     -- draft 未生成对阵 | ready 进行中 | done 已结束
+    lower_bracket INTEGER,                    -- 本届败者组：NULL 跟随赛事默认 | 0 本届不设 | 1 本届设
     round_id INTEGER,
     created_at TEXT DEFAULT ''
   )`);
@@ -257,7 +286,9 @@ function createEventTables() {
     edition_id INTEGER NOT NULL DEFAULT 0,
     label TEXT NOT NULL,
     group_no INTEGER NOT NULL DEFAULT 0,      -- 0 = 未分组
-    seq INTEGER NOT NULL DEFAULT 0
+    seq INTEGER NOT NULL DEFAULT 0,
+    seed_rank INTEGER NOT NULL DEFAULT 0,     -- 定格种子排名：生成分组/签表时写入，之后不随积分变动（0=未定格）
+    qual_label TEXT NOT NULL DEFAULT ''       -- 淘汰赛身份：A1/B2（小组名次）或种子位数字；空=用种子号
   )`);
 
   // 参赛单元成员。团体赛是关键：一个 entry 可以有 4~8 个队员，
@@ -269,8 +300,9 @@ function createEventTables() {
     seq INTEGER NOT NULL DEFAULT 0
   )`);
 
-  // 一场对抗。stage: group 小组赛 / ko 淘汰赛 / third 季军赛
+  // 一场对抗。stage: group 小组赛 / ko 淘汰赛 / third 季军赛 / lower 败者组（决 5~8 名）
   // ko_round：1 = 首轮，递增到决赛；slot 为该轮内的序号
+  // 败者组沿用 ko_round / slot：末轮 slot=0 是 5-6 名决赛，slot=1 是 7-8 名名次赛
   db.run(`CREATE TABLE IF NOT EXISTS event_ties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL,
@@ -281,6 +313,9 @@ function createEventTables() {
     slot INTEGER NOT NULL DEFAULT 0,
     side1_entry_id INTEGER,
     side2_entry_id INTEGER,
+    -- 非固搭双打：一场是 4 个人临时搭档，左右各两人，搭档不在同侧而是在另一侧同伴位
+    side1_entry2_id INTEGER,
+    side2_entry2_id INTEGER,
     winner_entry_id INTEGER,
     state TEXT NOT NULL DEFAULT 'pending',    -- pending | done
     seq INTEGER NOT NULL DEFAULT 0

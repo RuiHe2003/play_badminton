@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>羽毛球积分系统</title>
-  <link rel="stylesheet" href="/style.css?v=40">
+  <link rel="stylesheet" href="/style.css?v=54">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
 </head>
 <body>
@@ -203,23 +203,45 @@
     <div id="tab-headtohead" class="tab">
       <h2>⚔️ 对阵查询</h2>
       <div class="card">
-        <div class="form-row">
-          <div class="ac-wrap">
-            <input type="text" id="h2h-name1" placeholder="选手A姓名" autocomplete="off"
-                   oninput="onPlayerSuggest('h2h-name1')"
-                   onfocus="onPlayerSuggest('h2h-name1')"
-                   onkeydown="onPlayerSuggestKey(event, 'h2h-name1')">
-            <div class="ac-list" id="ac-h2h-name1"></div>
+        <div class="h2h-form">
+          <div class="h2h-team">
+            <span class="h2h-team-label">A 方</span>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-a1" placeholder="选手A姓名" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-a1')"
+                     onfocus="onPlayerSuggest('h2h-a1')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-a1')">
+              <div class="ac-list" id="ac-h2h-a1"></div>
+            </div>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-a2" placeholder="搭档（可选）" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-a2')"
+                     onfocus="onPlayerSuggest('h2h-a2')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-a2')">
+              <div class="ac-list" id="ac-h2h-a2"></div>
+            </div>
           </div>
-          <div class="ac-wrap">
-            <input type="text" id="h2h-name2" placeholder="选手B姓名" autocomplete="off"
-                   oninput="onPlayerSuggest('h2h-name2')"
-                   onfocus="onPlayerSuggest('h2h-name2')"
-                   onkeydown="onPlayerSuggestKey(event, 'h2h-name2')">
-            <div class="ac-list" id="ac-h2h-name2"></div>
+          <span class="h2h-vs-badge">VS</span>
+          <div class="h2h-team">
+            <span class="h2h-team-label">B 方</span>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-b1" placeholder="选手B姓名" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-b1')"
+                     onfocus="onPlayerSuggest('h2h-b1')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-b1')">
+              <div class="ac-list" id="ac-h2h-b1"></div>
+            </div>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-b2" placeholder="搭档（可选）" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-b2')"
+                     onfocus="onPlayerSuggest('h2h-b2')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-b2')">
+              <div class="ac-list" id="ac-h2h-b2"></div>
+            </div>
           </div>
           <button onclick="queryHeadToHead()">查询</button>
         </div>
+        <div class="h2h-tip">填 2 人 = 单打交手；填 3~4 人 = 双打（A 方两人搭档，对阵 B 方两人搭档）</div>
       </div>
       <div id="h2h-result"></div>
     </div>
@@ -238,6 +260,6 @@
     </div>
   </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
-  <script src="/app.js?v=50"></script>
+  <script src="/app.js?v=68"></script>
 </body>
 </html>

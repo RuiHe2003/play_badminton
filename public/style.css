@@ -207,6 +207,22 @@ tr:hover { background: #f7fafc; }
 .h2h-summary .big-score { font-size: 48px; font-weight: 700; }
 .h2h-summary .h2h-names { font-size: 18px; color: #4a5568; margin: 8px 0; }
 .h2h-summary .h2h-vs { font-size: 14px; color: #a0aec0; }
+
+/* 对阵查询：A 方 / B 方各 1~2 人，两人的输入框上下排列；窄屏整体换行 */
+.h2h-form { display: flex; align-items: center; justify-content: center; gap: 18px; flex-wrap: wrap; }
+.h2h-team { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px 14px;
+  background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; min-width: 250px; }
+.h2h-team-label { font-size: 12px; font-weight: 700; color: #718096; white-space: nowrap; letter-spacing: .5px; }
+.h2h-form .ac-wrap { width: 100%; flex: none; min-width: 0; }
+.h2h-form .ac-wrap input { width: 100%; padding: 11px 14px; font-size: 15px; background: #fff;
+  border: 1px solid #d2d6dc; border-radius: 8px; outline: none; transition: border-color .15s, box-shadow .15s; }
+.h2h-form .ac-wrap input:focus { border-color: #48bb78; box-shadow: 0 0 0 3px rgba(72,187,120,.1); }
+.h2h-form > button { padding: 13px 30px; font-size: 15px; border-radius: 8px; }
+.h2h-vs-badge { font-weight: 800; font-size: 15px; color: #a0aec0; letter-spacing: .5px; }
+.h2h-tip { margin-top: 8px; font-size: 12px; color: #a0aec0; }
+.h2h-avatars { display: flex; justify-content: center; gap: 6px; }
+.h2h-summary-row { display: flex; justify-content: center; align-items: center; gap: 20px; flex-wrap: wrap; }
+.h2h-summary-side { max-width: 46vw; }
 body:has(#tab-home.active) .container { padding: 0; }
   #tab-home.active { height: calc(100vh - 57px); display: flex; flex-direction: column; padding: 8px 24px; overflow: auto; }
   #tab-home.active #home-content { flex: 1; display: flex; flex-direction: column; gap: 0; overflow: visible; }
@@ -576,9 +592,67 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-tie-foot .ev-msg { font-size: 12px; color: #38a169; }
 .ev-skip-note { font-size: 12px; color: #a0aec0; background: #f7fafc; padding: 4px 10px; border-radius: 6px; }
 
-/* 淘汰签表：按轮分栏 */
+/* 败者组 / 季军赛这类不成树的场次：按轮分栏的旧样式继续用 */
 .ev-bracket-round { margin-bottom: 16px; }
 .ev-bracket-round-title { font-size: 13px; font-weight: 700; color: #4a5568; margin-bottom: 8px; }
+
+/* 淘汰签表：树状图（参考中羽在线，左起首轮逐级向右合并，冠军在最右）
+   对齐原理：所有列等高 = --bk-pitch × 首轮场数，列内 space-around 均分，
+   于是下一轮第 k 场的中心正好落在上一轮第 2k / 2k+1 两场的中点上。
+   双打搭档竖排后一行变两行，--bk-pitch 同步加大，列宽反而可以收窄。 */
+.bk-scroll { overflow-x: auto; overflow-y: hidden; padding: 30px 2px 6px; -webkit-overflow-scrolling: touch; }
+.bk { --bk-link: 30px; --bk-pitch: 96px; display: inline-flex; align-items: stretch;
+  gap: var(--bk-link); min-width: 100%; }
+.bk-col { position: relative; flex: 0 0 168px; width: 168px;
+  height: calc(var(--bk-pitch) * var(--n));
+  display: flex; flex-direction: column; justify-content: space-around; }
+.bk-col-champ { flex-basis: 128px; width: 128px; }
+.bk-col-title { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0;
+  text-align: center; font-size: 12px; font-weight: 700; color: #4a5568; white-space: nowrap; }
+.bk-col-title span { display: inline-block; background: #f7fafc; border: 1px solid #e2e8f0;
+  border-radius: 999px; padding: 2px 12px; }
+.bk-m { position: relative; width: 100%; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 6px; cursor: pointer; box-shadow: 0 1px 2px rgba(16, 24, 40, .05); }
+.bk-m:hover { border-color: #90cdf4; }
+.bk-m.active { border-color: #4299e1; box-shadow: 0 0 0 2px rgba(66, 153, 225, .25); }
+.bk-row { display: flex; align-items: center; gap: 5px; padding: 5px 7px; font-size: 13px;
+  line-height: 1.35; white-space: nowrap; border-left: 3px solid transparent; }
+.bk-row + .bk-row { border-top: 1px solid #edf2f7; }
+.bk-row:first-child { border-radius: 5px 5px 0 0; }
+.bk-row:last-of-type { border-radius: 0 0 5px 5px; }
+.bk-row.win { background: #f0fff4; border-left-color: #38a169; font-weight: 700; color: #22543d; }
+.bk-row.lose { color: #a0aec0; }
+.bk-row.empty { color: #cbd5e0; }
+.bk-row.picked { background: #ebf8ff; }
+/* 种子位 / 小组名次（A1/B2）做成浅灰徽章：比裸数字更醒目，也不和名字抢宽度 */
+.bk-seed { flex: none; min-width: 18px; padding: 0 4px; text-align: center;
+  font-size: 10px; font-weight: 600; line-height: 16px; color: #718096;
+  background: #edf2f7; border-radius: 4px; }
+.bk-seed:empty { display: none; }
+.bk-row.win .bk-seed { background: #c6f6d5; color: #22543d; }
+.bk-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.bk-plus { color: #a0aec0; font-weight: 400; padding: 0 1px; }
+.bk-sc { flex: none; min-width: 46px; text-align: right; font-size: 11.5px; color: #4a5568; font-variant-numeric: tabular-nums; }
+.bk-sc:empty { display: none; }
+.bk-row.win .bk-sc { color: #276749; }
+
+/* 连线：出线半格 + 竖线半格 + 入线半格，三段刚好在两场中点接上 */
+.bk-m::after { content: ''; position: absolute; left: 100%; top: 50%;
+  width: calc(var(--bk-link) / 2); border-top: 1px solid #cbd5e0; }
+.bk-col:not(.bk-col-first) .bk-m::before, .bk-champ::before { content: ''; position: absolute;
+  right: 100%; top: 50%; width: calc(var(--bk-link) / 2); border-top: 1px solid #cbd5e0; }
+.bk-v { position: absolute; left: calc(100% + var(--bk-link) / 2); top: 50%;
+  height: calc(var(--bk-pitch) / 2); border-left: 1px solid #cbd5e0; }
+.bk-v.up { top: auto; bottom: 50%; }
+.bk-champ { position: relative; align-self: center; width: 100%; text-align: center;
+  padding: 10px 6px; font-size: 13px; line-height: 1.45; background: #fffaf0; border: 1px solid #f6e05e; border-radius: 6px; }
+.bk-champ .bk-empty { color: #cbd5e0; }
+
+/* 季军赛：负者汇合，不是两两合并，不接进主树，单独挂一格 */
+.bk-third { margin-top: 18px; }
+.bk-third-title { font-size: 12px; font-weight: 700; color: #718096; margin-bottom: 6px; }
+.bk-third-match { max-width: 240px; }
+.bk-third .bk-m::after, .bk-third .bk-m::before { display: none; }
 .ev-slot { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid transparent;
   border-radius: 6px; font-size: 14px; font-weight: 600; color: #2d3748; }
 .ev-slot.empty { color: #cbd5e0; font-weight: 400; }
@@ -591,6 +665,63 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-final tr.top1 td { background: #fffff0; font-weight: 700; }
 .ev-final tr.top2 td { background: #f7fafc; font-weight: 600; }
 .ev-final tr.top3 td { background: #fffaf0; font-weight: 600; }
+
+/* 最终排名里的名字按钮 + 「查看此人对局」气泡（两段式点击，防手机误触） */
+.ev-ask-wrap { position: relative; display: inline-block; }
+.ev-name-btn {
+  display: inline-block; cursor: pointer; color: #2b6cb0; font-weight: 600;
+  border-bottom: 1px dashed #a0aec0; transition: all .15s;
+}
+.ev-name-btn:hover { color: #276749; border-bottom-color: #48bb78; }
+.ev-name-btn:focus-visible { outline: 2px solid #48bb78; outline-offset: 2px; }
+.ev-ask-bubble {
+  position: absolute; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
+  z-index: 30; white-space: nowrap; cursor: pointer;
+  padding: 6px 12px; font-size: 12px; font-weight: 600; color: #fff;
+  background: #38a169; border-radius: 6px; box-shadow: 0 3px 10px rgba(0, 0, 0, .22);
+  animation: ev-ask-in .12s ease-out;
+}
+/* 名字在页面最顶端时气泡往上会溢出，翻到下方 */
+.ev-ask-bubble.below { bottom: auto; top: calc(100% + 7px); }
+/* 小箭头 */
+.ev-ask-bubble::after {
+  content: ''; position: absolute; left: 50%; margin-left: -5px;
+  top: 100%; border: 5px solid transparent; border-top-color: #38a169;
+}
+.ev-ask-bubble.below::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #38a169; }
+@keyframes ev-ask-in { from { opacity: 0; transform: translateX(-50%) translateY(3px); } }
+
+/* 某人本届对局 */
+.ev-pv { width: 100%; }
+.ev-pv th { font-size: 13px; text-align: left; }
+.ev-pv td { vertical-align: middle; }
+.ev-pv-stage { color: #4a5568; font-size: 13px; white-space: nowrap; }
+.ev-pv-opp { font-weight: 600; color: #2d3748; }
+.ev-pv-vs { color: #a0aec0; margin: 0 2px; }
+.ev-pv-score { font-size: 13px; }
+.ev-pv-item { line-height: 1.7; }
+.ev-pv-itemname { display: inline-block; min-width: 3.2em; margin-right: 8px; color: #718096; font-size: 12px; }
+.ev-pv-score b { color: #2d3748; }
+.ev-pv-none { color: #a0aec0; font-size: 12px; }
+.ev-pv-res { font-weight: 700; white-space: nowrap; }
+.ev-pv-res.win { color: #38a169; }
+.ev-pv-res.lose { color: #e53e3e; }
+.ev-pv-res.pending { color: #a0aec0; font-weight: 400; }
+/* 一场里打了多个项目时，结果列与比分列分行一一对应 */
+.ev-pv-res .ev-pv-item { line-height: 1.7; }
+.ev-pv-res .r-win { color: #38a169; }
+.ev-pv-res .r-lose { color: #e53e3e; }
+.ev-pv-res .r-pending { color: #a0aec0; font-weight: 400; }
+
+/* 对局列：两边选手名 + 中间比分（老赛事个人对局页用） */
+.ev-pv-match { display: flex; align-items: baseline; gap: 10px; }
+/* 老赛事个人对局页：表头「对局」压在下方居中的比分上，别歪在左边
+   （要用 th.ev-pv-th-match 提高优先级，否则被 .ev-pv th 的 text-align:left 盖掉） */
+.ev-pv th.ev-pv-th-match { text-align: center; }
+.ev-pv-match b { flex: none; white-space: nowrap; color: #2d3748; }
+.ev-pv-side { font-weight: 600; color: #2d3748; font-size: 13px; }
+.ev-pv-side:first-child { flex: 1; text-align: right; }
+.ev-pv-side:last-child { flex: 1; text-align: left; }
 
 /* 赛事查询页里的赛事卡片：与老赛事的轮次卡片外观一致 */
 .ev-brief { font-size: 14px; color: #4a5568; line-height: 1.9; }
@@ -623,6 +754,18 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-roster-inline .ev-roster-body { position: absolute; z-index: 5; max-width: 260px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
 .ev-roster-inline { position: relative; }
 
+/* 非固搭双打：录入一场（4 人临时配对 + 比分） */
+.ev-free-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.ev-free-row select { max-width: 170px; padding: 5px 8px; font-size: 13px; }
+.ev-free-row input[type="number"] { width: 76px; padding: 5px 8px; font-size: 14px; text-align: center; }
+.ev-free-side { display: inline-block; min-width: 60px; font-size: 13px; font-weight: 600; color: #4a5568; }
+.ev-free-colon { color: #a0aec0; font-weight: 700; }
+/* 对局列表：胜的一方加粗变绿，一眼看出谁赢了 */
+.ev-free { width: 100%; }
+.ev-free th { font-size: 13px; text-align: left; }
+.ev-free td { font-size: 13px; }
+.ev-free-win { color: #276749; font-weight: 700; }
+
 /* 手动分组面板：一行一个参赛单元，带种子序号与总积分，右边选组 */
 .ev-group-pick { display: flex; flex-direction: column; gap: 6px; }
 .ev-gp-row {
@@ -634,6 +777,19 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-gp-pts { font-size: 12px; color: #4a5568; white-space: nowrap; }
 .ev-gp-row select { max-width: 110px; padding: 4px 6px; font-size: 13px; }
 
+/* 平板/窄桌面（480~860px）：桌面 196px 列会逼出横向滚动，签表单独收紧到紧凑档，
+   名字仍完整显示（不动其他组件在 480 档的布局） */
+@media (max-width: 860px) {
+  .bk-col { flex-basis: 176px; width: 176px; }
+  .bk-col-champ { flex-basis: 132px; width: 132px; }
+  .bk-row { font-size: 12px; padding: 4px 6px; gap: 4px; }
+  .bk-seed { min-width: 16px; padding: 0 3px; font-size: 9.5px; line-height: 14px; }
+  .bk-sc { min-width: 38px; font-size: 11px; }
+  .bk-col-title span { padding: 2px 9px; }
+  /* 冠军框：窄列里 13px 字号会长名字折行，降到 12px 并收窄内边距 */
+  .bk-champ { font-size: 12px; padding: 8px 5px; }
+}
+
 @media (max-width: 480px) {
   .ev-head-actions { margin-left: 0; width: 100%; }
   .ev-head-actions button { flex: 1; }
@@ -643,4 +799,27 @@ body:has(#tab-home.active) .container { padding: 0; }
   .ev-lineup select { font-size: 12px; max-width: 46vw; }
   .ev-gp-row { flex-wrap: wrap; }
   .ev-gp-name { flex-basis: 100%; }
+  /* 窄屏：项目名称不再横排占位，改到比分上方单独一行 */
+  .ev-pv-itemname { display: block; min-width: 0; margin-right: 0; }
+  .ev-name-btn { font-size: 13px; }
+  /* 窄屏放不下「选手 + 比分 + 选手」一行，改成三行竖排 */
+  .ev-pv-match { flex-direction: column; align-items: flex-start; gap: 2px; }
+  /* 手机上对局内容竖排靠左，表头跟着回左对齐 */
+  .ev-pv th.ev-pv-th-match { text-align: left; }
+  .ev-pv-side:first-child, .ev-pv-side:last-child { flex: none; text-align: left; }
+  /* 树状签表：窄屏整体横向滚动，格子与间距同步收紧 */
+  .bk { --bk-link: 18px; --bk-pitch: 88px; }
+  /* 对阵查询：A/B 两方上下堆叠，各占满卡片宽度 */
+  .h2h-form { flex-direction: column; align-items: stretch; gap: 10px; }
+  .h2h-team { min-width: 0; width: 100%; }
+  .h2h-form > button { width: 100%; padding: 12px; }
+  .h2h-vs-badge { text-align: center; }
+  .bk-col { flex-basis: 152px; width: 152px; }
+  .bk-col-champ { flex-basis: 118px; width: 118px; }
+  .bk-row { font-size: 12px; padding: 4px 6px; gap: 4px; }
+  .bk-seed { min-width: 16px; padding: 0 3px; font-size: 9.5px; line-height: 14px; }
+  .bk-sc { min-width: 38px; font-size: 11px; }
+  .bk-col-title span { padding: 2px 9px; }
+  .bk-name .bk-n2 { padding-left: 10px; }
+  .bk-champ { font-size: 12px; padding: 8px 5px; }
 }

@@ -5,7 +5,7 @@
 //   - style.css：在 index.html 里单独写 ?v=N
 // 改 app.js 或图片 → 本常量 +1，并同步 index.html 的 /app.js?v=N
 // 改 style.css   → 只改 index.html 的 /style.css?v=N
-const ASSET_V = '50';
+const ASSET_V = '63';
 function assetUrl(p) { return p + '?v=' + ASSET_V; }
 let currentAdminSub = 'players';
 // 赛事没有自定义图标时，荣誉/详情处用的占位字符。
@@ -895,19 +895,37 @@ async function loadFreeMatchList() {
 
   const sorted = Object.entries(playerStats).sort((a, b) => b[1].wins - a[1].wins || (b[1].pf - b[1].pa) - (a[1].pf - a[1].pa));
   const n = sorted.length;
-  const d = n ? Math.round(MS.level / n) : 0;
+  const lvl = parseInt(MS.level, 10) || 0;
+  const d = n ? Math.round(lvl / n) : 0;
+  // 与后端 calculatePlayerRankings 同口径，否则这里显示的积分会和总积分榜对不上
+  // （真正写进积分榜的是后端那一份）：胜场与净胜分都相同才算并列 → 同名次 +
+  // 积分取所跨名次的平均值，且单场积分不低于 0。
+  const rows = [];
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    const netI = sorted[i][1].pf - sorted[i][1].pa;
+    while (j + 1 < n
+      && sorted[j + 1][1].wins === sorted[i][1].wins
+      && (sorted[j + 1][1].pf - sorted[j + 1][1].pa) === netI) j++;
+    let sum = 0;
+    for (let k = i; k <= j; k++) sum += Math.max(0, lvl - d * k);
+    const avg = Math.round(sum / (j - i + 1));
+    for (let k = i; k <= j; k++) rows.push({ s: sorted[k][1], rank: i + 1, pts: avg });
+    i = j + 1;
+  }
   h += '<h4 style="margin-top:16px">📊 选手排名</h4><table><thead><tr><th>#</th><th>选手</th><th>胜</th><th>负</th><th>得分</th><th>失分</th><th>净胜分</th><th>积分</th></tr></thead><tbody>';
-  sorted.forEach(([pid, s], i) => {
-    const pts = MS.level - d * i;
+  rows.forEach(r => {
+    const s = r.s;
     h += `<tr>
-      <td>${i + 1}</td>
+      <td>${r.rank}</td>
       <td><strong>${s.name}</strong></td>
       <td style="color:#38a169">${s.wins}</td>
       <td style="color:#e53e3e">${s.losses}</td>
       <td>${s.pf}</td>
       <td>${s.pa}</td>
       <td>${s.pf - s.pa}</td>
-      <td><strong>${pts}</strong></td>
+      <td><strong>${r.pts}</strong></td>
     </tr>`;
   });
   h += '</tbody></table>';
@@ -985,24 +1003,36 @@ function updateLive() {
 }
 
 // ==================== Rankings ====================
-let currentLowKey = null;
-// 750 级合并列：所有 750 级赛事共用一个下拉列，默认显示"日期最新"举办的一届
-// 例外：女生榜中国王杯(750级)单独成列，不并入合并列
-const MERGED750_EXCLUDE_FEMALE = ['国王杯'];
-// 男女榜的合并列选项不同，故选中项与"是否手动选过"都按性别分别记录
-let currentHigh750Key = { male: null, female: null };
-// 用户是否手动切换过下拉：没手动选过就永远默认显示"日期最新"的一届
-let high750UserPicked = { male: false, female: false };
-let lowUserPicked = false;
+// 总积分之外，赛事按级别分成三个"带"，每个带只占一列，列内用下拉切换具体赛事
+//   b1000：1000 级赛事
+//   b750 ：750 级赛事（女生榜的国王杯750 例外，归到 b1000）
+//   b500 ：500 级与 300 级赛事
+const RANK_BANDS = [
+  { id: 'b1000', label: '1000级' },
+  { id: 'b750', label: '750级' },
+  { id: 'b500', label: '500/300级' },
+];
+// 女生榜特有：这几个 750 级赛事不进 750 列，跟 1000 级排在一起
+const FEMALE_750_IN_1000 = ['国王杯'];
+// 每个带默认选中"最近一届日期"最新的赛事；用户手动选过之后就尊重选择
+// 男女榜各带分别记录选中项与"是否手动选过"
+const currentBandKey = { male: {}, female: {} };
+const bandUserPicked = { male: {}, female: {} };
+for (const g of ['male', 'female']) {
+  for (const b of RANK_BANDS) { currentBandKey[g][b.id] = null; bandUserPicked[g][b.id] = false; }
+}
 // 总积分榜默认只显示前 10 名，点下方提示条展开完整榜单；男女榜各自记住展开状态
 const RANK_LIMIT = 10;
 let rankExpanded = { male: false, female: false };
-function isMerged750Key(key, gender) {
+function bandOf(key, gender) {
   const m = key.match(/^(.+)\((\d+)级\)$/);
-  // 只要等级是 750 就归入合并列，新增 750 级赛事无需再改代码
-  if (!m || parseInt(m[2]) !== 750) return false;
-  if (gender === 'female' && MERGED750_EXCLUDE_FEMALE.includes(m[1])) return false;
-  return true;
+  const level = m ? parseInt(m[2]) : 1000;
+  const name = m ? m[1] : key;
+  if (gender === 'female' && level === 750 && FEMALE_750_IN_1000.includes(name)) return 'b1000';
+  if (level >= 1000) return 'b1000';
+  if (level === 750) return 'b750';
+  // 500、300 以及将来更低的级别统一归到最后一列
+  return 'b500';
 }
 function sortKeysByLevelDesc(a, b) {
   const la = parseInt(a.match(/\((\d+)级\)$/)?.[1] || 1000);
@@ -1026,18 +1056,7 @@ async function loadRankings() {
       for (const key in p.tournaments) allKeys[key] = true;
     }
     const sortedAll = Object.keys(allKeys).sort();
-    // Compute all low keys (level < 750) for currentLowKey init
-    const allLowKeys = [];
-    for (const key of sortedAll) {
-      const m = key.match(/\((\d+)级\)$/);
-      const level = m ? parseInt(m[1]) : 1000;
-      if (level < 750) allLowKeys.push(key);
-    }
-    // 计算每个 key 最近一届的日期（合并列默认选中"日期最新"的一届）；顺带建立 赛事名→图标 映射
-    const allMerged750Keys = {
-      male: sortedAll.filter(k => isMerged750Key(k, 'male')),
-      female: sortedAll.filter(k => isMerged750Key(k, 'female')),
-    };
+    // 计算每个 key 最近一届的日期（各级别带默认选中"日期最新"的一届）；顺带建立 赛事名→图标 映射
     const keyLatestDate = {};
     const iconMap = {};
     {
@@ -1072,15 +1091,6 @@ async function loadRankings() {
         return sortKeysByLevelDesc(a, b);
       });
     }
-    if (!lowUserPicked || !currentLowKey || !allLowKeys.includes(currentLowKey)) {
-      currentLowKey = allLowKeys.length ? latestOf(allLowKeys) : null;
-    }
-    for (const g of ['male', 'female']) {
-      const keys = allMerged750Keys[g];
-      if (!high750UserPicked[g] || !currentHigh750Key[g] || !keys.includes(currentHigh750Key[g])) {
-        currentHigh750Key[g] = keys.length ? latestOf(keys) : null;
-      }
-    }
     function isTournamentForGender(type, gender) {
       if (type === 'singles') return gender === 'male';
       return true;
@@ -1093,36 +1103,27 @@ async function loadRankings() {
           if (isTournamentForGender(p.tournaments[k].type, gender)) has[k] = true;
         }
       }
-      const high = [];
-      const merged = [];
-      const low = [];
+      const out = {};
+      for (const b of RANK_BANDS) out[b.id] = [];
       for (const key of sortedAll) {
-        const m = key.match(/\((\d+)级\)$/);
-        const level = m ? parseInt(m[1]) : 1000;
-        if (level >= 750) {
-          if (has[key]) (isMerged750Key(key, gender) ? merged : high).push(key);
-        } else {
-          if (has[key]) low.push(key);
-        }
+        if (!has[key]) continue;
+        out[bandOf(key, gender)].push(key);
       }
-      high.sort(sortKeysByLevelDesc);
-      merged.sort(sortKeysByLevelDesc);
-      return { high, merged, low };
+      // 带内先按级别降序（1000 列里女生榜的国王杯750 会排在 1000 级之后）
+      for (const b of RANK_BANDS) out[b.id].sort(sortKeysByLevelDesc);
+      return out;
     }
     function renderRankTable(players, label, deltas) {
       if (!players.length) return '';
       const gender = players[0].gender;
       const gk = getGenderKeys(gender);
-      const highKeys = gk.high;
-      const mergedKeys = gk.merged;
-      const lowKeys = gk.low;
-      let lowKey = currentLowKey;
-      if (lowKeys.length && (!lowKey || !lowKeys.includes(lowKey))) {
-        lowKey = latestOf(lowKeys);
-      }
-      let mKey = currentHigh750Key[gender];
-      if (mergedKeys.length && (!mKey || !mergedKeys.includes(mKey))) {
-        mKey = latestOf(mergedKeys);
+      // 每个带各占一列：没手动选过就默认选中该带里"日期最新"的一届
+      const bandSel = {};
+      for (const b of RANK_BANDS) {
+        const keys = gk[b.id];
+        let k = currentBandKey[gender][b.id];
+        if (keys.length && (!k || !keys.includes(k))) k = latestOf(keys);
+        bandSel[b.id] = k;
       }
       // 表头：赛事图标（24px 圆角）显示在赛事名称上方，未设置图标的赛事保持原样
       // 图标单独占一行（block），与名称/级别行分离，避免把下拉箭头挤成孤行
@@ -1145,23 +1146,20 @@ async function loadRankings() {
         const name = tourNameOf(k);
         return iconMap[name] ? tourIconHtml(name) + tourLabel(k) : tourLabel(k);
       }
-      // 列布局：先按级别降序输出独立高列（女生榜的国王杯750在此列队），再输出 750 合并列
-      const columns = highKeys.map(key => ({ merged: false, key }));
-      if (mergedKeys.length) columns.push({ merged: true, keys: mergedKeys });
+      // 列布局：总积分之外固定三列 —— 1000 级 / 750 级 / 500+300 级，
+      // 女生榜的国王杯750 已由 bandOf 归到 1000 列；空带不输出列
       // 下拉选项：日期最新的排最前
-      const mergedOpts = byDateDesc(mergedKeys);
-      const lowOpts = byDateDesc(lowKeys);
-      function dropdownTh(keys, selected, kind) {
-        const icon = kind === 'low' ? 'low-icon' : 'high-icon';
-        const toggle = kind === 'low' ? 'toggleLowDropdown' : 'toggleHighDropdown';
-        const change = kind === 'low' ? 'changeLowTournament' : 'changeHighTournament';
+      const columns = RANK_BANDS
+        .filter(b => gk[b.id].length)
+        .map(b => ({ band: b.id, label: b.label, keys: byDateDesc(gk[b.id]), selected: bandSel[b.id] }));
+      function dropdownTh(keys, selected, bandId) {
         const tip = keyLatestDate[selected] ? `最近一届 ${keyLatestDate[selected]}` : '';
         const nm = tourNameOf(selected);
         const iconPart = iconMap[nm] ? tourIconHtml(nm) : '';
-        return `<th class="tour-th" onclick="${toggle}(this)" title="${tip}" style="cursor:pointer;user-select:none;position:relative">
-        ${iconPart}${tourLabel(selected, `<span class="${icon}">▶</span> `)}
+        return `<th class="tour-th" onclick="toggleBandDropdown(this)" title="${tip}" style="cursor:pointer;user-select:none;position:relative">
+        ${iconPart}${tourLabel(selected, `<span class="band-icon">▶</span> `)}
         <div class="low-dd" onclick="event.stopPropagation()" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #e2e8f0;border-radius:4px;padding:4px;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.15);white-space:nowrap">
-          <select class="low-sel" onchange="${change}(this)" style="padding:4px;border-radius:4px">
+          <select class="low-sel" data-band="${bandId}" onchange="changeBandTournament(this)" style="padding:4px;border-radius:4px">
             ${keys.map(k => `<option value="${k}" ${k === selected ? 'selected' : ''}>${k}${keyLatestDate[k] ? ' · ' + keyLatestDate[k] : ''}</option>`).join('')}
           </select>
         </div>
@@ -1169,10 +1167,7 @@ async function loadRankings() {
       }
       let h = `<div class="card"><h3>${label}总积分排名</h3>`;
       h += `<div class="rank-table-wrap"><table class="rank-table" data-gender="${gender}"><thead><tr><th class="th-hero-cell"><span class="th-hero" style="background-image:url('${assetUrl(gender === 'male' ? '/syq.png' : '/ztqy.png')}')"></span></th><th class="th-key">姓<span class="th-gap"></span>名</th>`;
-      for (const col of columns) {
-        h += col.merged ? dropdownTh(mergedOpts, mKey, 'high') : `<th class="tour-th">${fmtKey(col.key)}</th>`;
-      }
-      if (lowKeys.length) h += dropdownTh(lowOpts, lowKey, 'low');
+      for (const col of columns) h += dropdownTh(col.keys, col.selected, col.band);
       h += `<th class="th-key total-th" style="white-space:nowrap"><img class="tour-icon tour-icon-wide" src="${assetUrl('/total_points.png')}" alt="">总积分</th></tr></thead><tbody>`;
       players.forEach((p, i) => {
         const extra = i >= RANK_LIMIT;
@@ -1185,13 +1180,8 @@ async function loadRankings() {
         const trendVis = trendColor ? '' : 'visibility:hidden';
         h += `<tr class="${extra ? 'rank-extra' : ''}"${hiddenAttr}><td class="hero-col"><span class="badge ${rc}">${i + 1}</span></td><td style="white-space:nowrap">${rankAvatarHtml(p, avatarMap)}<strong>${displayName(p)}</strong></td>`;
         for (const col of columns) {
-          const ck = col.merged ? mKey : col.key;
-          const t = ck ? p.tournaments[ck] : null;
+          const t = col.selected ? p.tournaments[col.selected] : null;
           h += `<td class="tour-td">${t ? t.points : 0}${t?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
-        }
-        if (lowKeys.length) {
-          const lt = lowKey ? p.tournaments[lowKey] : null;
-          h += `<td class="tour-td">${lt ? lt.points : 0}${lt?.deducted ? ' <span style="color:#d69e00">▼</span>' : ''}</td>`;
         }
         h += `<td class="total-td" style="vertical-align:middle;white-space:nowrap"><strong>${p.total_points}</strong> <span style="display:inline-flex;flex-direction:column;align-items:center;line-height:1;color:${trendColor || '#ccc'};${trendVis};vertical-align:middle">
           <span style="font-size:10px;font-weight:bold;line-height:1.2">${trendNum || '0'}</span>
@@ -1233,48 +1223,25 @@ function toggleRankExpand(gender) {
     : `▼ 仅显示前 ${RANK_LIMIT} 名，还有 ${rest} 位选手 · 点击查看完整排名`;
 }
 
-function toggleLowDropdown(th) {
+// 三个级别带共用一套下拉逻辑：band 由 select 上的 data-band 区分，
+// 性别由所属表格的 data-gender 区分，男女榜各带互不干扰
+function toggleBandDropdown(th) {
   const dd = th.querySelector('.low-dd');
-  const icon = th.querySelector('.low-icon');
+  const icon = th.querySelector('.band-icon');
   if (!dd) return;
-  if (dd.style.display === 'none' || !dd.style.display) {
-    dd.style.display = 'block';
-    icon.textContent = '▼';
-  } else {
-    dd.style.display = 'none';
-    icon.textContent = '▶';
-  }
+  const open = dd.style.display === 'none' || !dd.style.display;
+  dd.style.display = open ? 'block' : 'none';
+  if (icon) icon.textContent = open ? '▼' : '▶';
 }
 
-function changeLowTournament(sel) {
-  currentLowKey = sel.value;
-  lowUserPicked = true;
-  document.querySelectorAll('.low-dd').forEach(d => d.style.display = 'none');
-  document.querySelectorAll('.low-icon').forEach(i => i.textContent = '▶');
-  loadRankings();
-}
-
-function toggleHighDropdown(th) {
-  const dd = th.querySelector('.low-dd');
-  const icon = th.querySelector('.high-icon');
-  if (!dd) return;
-  if (dd.style.display === 'none' || !dd.style.display) {
-    dd.style.display = 'block';
-    if (icon) icon.textContent = '▼';
-  } else {
-    dd.style.display = 'none';
-    if (icon) icon.textContent = '▶';
-  }
-}
-
-function changeHighTournament(sel) {
-  // 男女榜的 750 合并列互不相干，按所属表格的性别分别记录
+function changeBandTournament(sel) {
+  const band = sel.dataset.band;
+  if (!band) return;
   const g = (sel.closest('table') || {}).dataset?.gender || 'male';
-  currentHigh750Key[g] = sel.value;
-  high750UserPicked[g] = true;
+  currentBandKey[g][band] = sel.value;
+  bandUserPicked[g][band] = true;
   document.querySelectorAll('.low-dd').forEach(d => d.style.display = 'none');
-  document.querySelectorAll('.high-icon').forEach(i => i.textContent = '▶');
-  document.querySelectorAll('.low-icon').forEach(i => i.textContent = '▶');
+  document.querySelectorAll('.band-icon').forEach(i => i.textContent = '▶');
   loadRankings();
 }
 
@@ -1339,6 +1306,8 @@ async function showTournamentLatest(tid) {
 
 // 从详情页返回赛事列表页：清掉 URL 上的 ?tid=，并重新初始化网格
 function closeTourDetail() {
+  // 正停在某个人的本届对局页：先退回他的赛事卡片，别一下跳回网格
+  if (rqPrevHtml !== null) { rqClosePlayerView(); return; }
   clearTidParam();
 
   // 返回时把用户刚才选的赛事 / 届数原样恢复：initQueryPage() 会重建下拉框 options，
@@ -1430,8 +1399,14 @@ function tourIconByNameHtml(name) {
   return `<span class="round-tour-icon round-tour-icon-ph" title="${htmlEsc(name)}">${htmlEsc((name || '?')[0])}</span>`;
 }
 
+// 老赛事（一届一轮循环赛那套）的轮次卡片渲染下来只剩 HTML，
+// 点人名要看对局得回查原始 round 数据，这里按 round.id 缓存一份。
+const roundCardCache = {};
+
 function renderRoundCard(round) {
   const isFree = round.tournament_name === '狗王杯';
+  // 点最终排名里的人名要能看他的对局，数据在 round 对象里，卡片只留 HTML，故缓存一份
+  roundCardCache[round.id] = round;
   // 「创建赛事」建的赛事：这不是一届一轮的循环赛，用轮次卡片渲染会看不懂，
   // 改成一张引导卡，点进赛事工作台看小组积分榜与淘汰签表。
   const evT = queryTournaments.find(x => x.id === round.tournament_id && x.is_event);
@@ -1447,8 +1422,7 @@ function renderRoundCard(round) {
       <h3 class="round-card-title">${tourIconByNameHtml(round.tournament_name)}<span>${round.tournament_name} - 第${round.edition}届 (${round.date}) | ${round.round_level || 1000}级</span></h3></div>`;
   h += `<table><thead><tr><th>排名</th><th>${isFree ? '选手' : '队伍'}</th><th>胜</th><th>负</th><th>净胜分</th><th>积分</th></tr></thead><tbody>`;
   for (const r of round.ranking.rankings) {
-    const name = isFree ? pn(r.player_id) : (r.player2_id ? `${pn(r.player1_id)} + ${pn(r.player2_id)}` : pn(r.player1_id));
-    h += `<tr><td>${r.rank}</td><td>${name}</td><td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
+    h += `<tr><td>${r.rank}</td>${rqNameCellHtml(round, r)}<td>${r.wins}</td><td>${r.losses}</td><td>${r.net_points}</td><td>${r.points_earned}</td></tr>`;
   }
   h += `</tbody></table>`;
   if (round.matches && round.matches.length) {
@@ -1462,6 +1436,155 @@ function renderRoundCard(round) {
       h += `<tr><td>${t1n}</td><td><strong>${m.team1_score} : ${m.team2_score}</strong></td><td>${t2n}</td></tr>`;
     }
     h += `</tbody></table></div>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
+// ---------------- 老赛事：最终排名点人名 → 此人本届对局 ----------------
+// 与「创建赛事」那条链路（evNameBtnHtml / evAskPlayer）保持同样的两段式交互，
+// 只是数据源从 event_ties 换成 round.teams + round.matches。
+
+// 排名行是一个「参赛单位」：单打一个人，双打两个人是同一个整体 → 只做一个按钮
+// 单位用 key 表示：「12」单人 / 「12_34」双打组合
+function rqNameCellHtml(round, row) {
+  const ids = [];
+  for (const k of ['player_id', 'player1_id', 'player2_id']) {
+    if (row[k] && !ids.includes(row[k])) ids.push(row[k]);
+  }
+  if (!ids.length) return '<td style="color:#a0aec0">—</td>';
+  const key = ids.join('_');
+  const label = ids.map(pn).join(' + ');
+  return `<td><span class="ev-ask-wrap"><span class="ev-name-btn" role="button" tabindex="0"
+    onclick="rqAskPlayer(${round.id},'${key}',this)">${htmlEsc(label)}</span></span></td>`;
+}
+
+function rqUnitLabel(key) {
+  return String(key).split('_').map(id => pn(Number(id))).join(' + ');
+}
+
+// 这个参赛单位在本届用过的队伍 id（狗王杯这种自由组队，一个人可能出现多个队里）
+function rqPlayerTeamIds(round, key) {
+  const ids = String(key).split('_').map(Number);
+  const all = (round.teams || []).filter(t => ids.every(id => t.player1_id === id || t.player2_id === id));
+  if (all.length) return all.map(t => t.team_id);
+  return (round.teams || [])
+    .filter(t => ids.some(id => t.player1_id === id || t.player2_id === id))
+    .map(t => t.team_id);
+}
+
+let rqAskBound = false;
+let rqPrevHtml = null;
+let rqPrevTitle = null;
+
+function rqAskPlayer(roundId, unitKey, el) {
+  const key = `${roundId}:${unitKey}`;
+  const already = document.querySelector(`.ev-ask-bubble[data-key="${key}"]`);
+  evCloseAsk();
+  if (already) return;                       // 再点同一个名字 = 收起气泡
+  if (!rqAskBound) {
+    rqAskBound = true;
+    // 同一次 click 事件还会冒泡到 document，故排除落在名字/气泡上的点击
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.ev-name-btn') || e.target.closest('.ev-ask-bubble')) return;
+      evCloseAsk();
+    });
+  }
+  const b = document.createElement('span');
+  b.className = 'ev-ask-bubble';
+  b.dataset.key = key;
+  b.textContent = '查看此人对局';
+  b.setAttribute('role', 'button');
+  b.tabIndex = 0;
+  b.onclick = (e) => { e.stopPropagation(); rqOpenPlayerMatches(roundId, unitKey); };
+  b.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault(); rqOpenPlayerMatches(roundId, unitKey);
+  };
+  el.insertAdjacentElement('afterend', b);
+  if (b.getBoundingClientRect().top < 4) b.classList.add('below');   // 顶到屏幕外就翻到名字下方
+  b.focus();
+}
+
+function rqOpenPlayerMatches(roundId, unitKey) {
+  evCloseAsk();
+  const round = roundCardCache[roundId];
+  const el = document.getElementById('tour-detail-body');
+  if (!round || !el) return;
+  rqPrevHtml = el.innerHTML;                 // 记下原卡片，返回时原样放回去
+  const t = document.getElementById('detail-tour-title');
+  rqPrevTitle = t ? t.textContent : null;
+  el.innerHTML = rqPlayerViewHtml(round, unitKey);
+  if (t) t.textContent = `${round.tournament_name} · ${rqUnitLabel(unitKey)}`;
+  window.scrollTo(0, 0);
+}
+
+function rqClosePlayerView() {
+  const el = document.getElementById('tour-detail-body');
+  if (el && rqPrevHtml !== null) { el.innerHTML = rqPrevHtml; rqPrevHtml = null; }
+  const t = document.getElementById('detail-tour-title');
+  if (t && rqPrevTitle !== null) { t.textContent = rqPrevTitle; rqPrevTitle = null; }
+}
+
+function rqSideNames(m, which) {
+  // which: 1 = 队伍1，2 = 队伍2；有真名用真名，没有就退回昵称
+  const dn = (n, r) => r || n || '';
+  const names = which === 1
+    ? [dn(m.t1p1name, m.t1p1real), dn(m.t1p2name, m.t1p2real)]
+    : [dn(m.t2p1name, m.t2p1real), dn(m.t2p2name, m.t2p2real)];
+  return names.filter(Boolean).join(' + ') || '—';
+}
+
+function rqPlayerViewHtml(round, unitKey) {
+  const ids = String(unitKey).split('_').map(Number);
+  const myName = rqUnitLabel(unitKey);        // 双打是两个人的组合名，单打就是一个人的名字
+  const teamIds = rqPlayerTeamIds(round, unitKey);
+  const mine = (round.matches || []).filter(m => teamIds.includes(m.team1_id) || teamIds.includes(m.team2_id));
+  const row = (round.ranking.rankings || []).find(r => {
+    const rid = [r.player_id, r.player1_id, r.player2_id].filter(Boolean);
+    return ids.every(id => rid.includes(id)) && rid.length === ids.length;
+  });
+
+  let wins = 0, losses = 0, draws = 0, rows = '';
+  mine.forEach((m, i) => {
+    const isT1 = teamIds.includes(m.team1_id);
+    const my = isT1 ? m.team1_score : m.team2_score;
+    const op = isT1 ? m.team2_score : m.team1_score;
+    const played = my !== 0 || op !== 0;
+    let resText = '未开打', resCls = 'pending';
+    if (played) {
+      if (my > op) { resText = '胜'; resCls = 'win'; wins++; }
+      else if (my < op) { resText = '负'; resCls = 'lose'; losses++; }
+      else { resText = '平'; draws++; }
+    }
+    // 对局列：两边选手都列出来，比分夹在中间 —— 「我方 21 : 15 对手」
+    const sideOpp = htmlEsc(rqSideNames(m, isT1 ? 2 : 1));
+    const matchCell = `<div class="ev-pv-match">
+      <span class="ev-pv-side">${htmlEsc(myName)}</span>
+      ${played ? `<b>${my} : ${op}</b>` : '<span class="ev-pv-none">未开打</span>'}
+      <span class="ev-pv-side">${sideOpp}</span>
+    </div>`;
+    rows += `<tr>
+      <td class="ev-pv-stage">第 ${i + 1} 场</td>
+      <td>${matchCell}</td>
+      <td class="ev-pv-res ${resCls}">${resText}</td>
+    </tr>`;
+  });
+
+  const sum = `${mine.length} 场${mine.length ? `　胜 ${wins} / 负 ${losses}${draws ? ' / 平 ' + draws : ''}` : ''}`;
+  // 返回键用详情页头部自带的那个（closeTourDetail 会先退回最终排名），这里不再重复画一个
+  let h = '';
+  if (row) {
+    h += `<div class="card ev-brief" style="margin-bottom:12px">
+      本届战绩：<strong>${row.wins} 胜 ${row.losses} 负</strong>，净胜分 ${row.net_points}，本届积分 ${row.points_earned}
+    </div>`;
+  }
+  h += `<div class="card"><h3>本届对局 <span class="ev-hint">${sum}</span></h3>`;
+  if (!mine.length) {
+    h += `<div class="ev-empty">这个参赛单位本届还没有已录入的对局</div>`;
+  } else {
+    h += `<table class="ev-pv"><thead><tr><th>场次</th><th class="ev-pv-th-match">对局</th><th>结果</th></tr>
+      <tbody>${rows}</tbody></table>`;
   }
   h += `</div>`;
   return h;
@@ -1978,8 +2101,10 @@ function goToHeadToHead(name1, name2) {
   document.querySelector('[data-tab="headtohead"]').classList.add('active');
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-headtohead').classList.add('active');
-  document.getElementById('h2h-name1').value = name1;
-  document.getElementById('h2h-name2').value = name2;
+  document.getElementById('h2h-a1').value = name1;
+  document.getElementById('h2h-b1').value = name2;
+  document.getElementById('h2h-a2').value = '';
+  document.getElementById('h2h-b2').value = '';
   queryHeadToHead();
 }
 
@@ -2201,14 +2326,21 @@ document.addEventListener('click', e => {
 });
 
 // ==================== Head to Head ====================
+// A 方 1~2 人 vs B 方 1~2 人：填 2 人=单打交手；填 3~4 人=双打（同侧两人作为搭档必须都在同一边）
 async function queryHeadToHead() {
-  const n1 = document.getElementById('h2h-name1').value.trim();
-  const n2 = document.getElementById('h2h-name2').value.trim();
-  if (!n1 || !n2) return alert('请输入两位选手姓名');
+  const gv = id => (document.getElementById(id).value || '').trim();
+  const A = [gv('h2h-a1'), gv('h2h-a2')].filter(Boolean);
+  const B = [gv('h2h-b1'), gv('h2h-b2')].filter(Boolean);
   const el = document.getElementById('h2h-result');
+  if (!A.length || !B.length) return alert('A 方、B 方都至少填一位选手');
+  const all = A.concat(B);
+  if (new Set(all).size !== all.length) return alert('同一位选手不要重复填写');
   el.innerHTML = '<div class="loading">查询中...</div>';
   try {
-    const data = await api(`/api/headtohead?name1=${encodeURIComponent(n1)}&name2=${encodeURIComponent(n2)}`);
+    const qs = new URLSearchParams({ a1: A[0], b1: B[0] });
+    if (A[1]) qs.set('a2', A[1]);
+    if (B[1]) qs.set('b2', B[1]);
+    const data = await api('/api/headtohead?' + qs.toString());
     const h2h = data.head_to_head;
     const esc = n => n.replace(/'/g, "\\'");
     function avatarHtml(p, size) {
@@ -2216,20 +2348,32 @@ async function queryHeadToHead() {
       if (p.avatar) return `<a href="#" onclick="goToPlayer('${esc(p.name)}');return false" style="text-decoration:none;display:block">${inner}</a>`;
       return inner;
     }
-    let html = `<div class="card h2h-summary"><div style="display:flex;justify-content:center;align-items:center;gap:24px">
-      <div style="text-align:center">${avatarHtml(data.player1, 64)}<strong style="font-size:20px">${displayName(data.player1)}</strong><br><span class="badge badge-win">${h2h.p1_wins} 胜</span></div>
-      <div class="big-score">${h2h.p1_wins} : ${h2h.p2_wins}</div>
-      <div style="text-align:center">${avatarHtml(data.player2, 64)}<strong style="font-size:20px">${displayName(data.player2)}</strong><br><span class="badge badge-loss">${h2h.p2_wins} 胜</span></div>
+    // 双人搭档：头像缩小、名字用 + 连接，避免窄屏挤成三行
+    function sideHtml(team, wins, cls) {
+      const size = team.length > 1 ? 46 : 64;
+      return `<div class="h2h-summary-side" style="text-align:center">
+        <div class="h2h-avatars">${team.map(p => avatarHtml(p, size)).join('')}</div>
+        <strong style="font-size:${team.length > 1 ? 16 : 20}px">${team.map(p => displayName(p)).join(' + ')}</strong><br>
+        <span class="badge ${cls}">${wins} 胜</span>
+      </div>`;
+    }
+    let html = `<div class="card h2h-summary"><div class="h2h-summary-row">
+      ${sideHtml(data.teamA, h2h.a_wins, 'badge-win')}
+      <div class="big-score">${h2h.a_wins} : ${h2h.b_wins}</div>
+      ${sideHtml(data.teamB, h2h.b_wins, 'badge-loss')}
     </div><div class="h2h-vs" style="margin-top:8px">共交手 ${h2h.total} 次</div></div>`;
     if (data.matches.length) {
+      const aId = data.teamA[0].id;
       html += `<div class="card"><h3>交手记录</h3>`;
       for (const m of data.matches) {
         const t1 = m.team1.players.map(p => displayName(p)).join(' + ');
         const t2 = m.team2.players.map(p => displayName(p)).join(' + ');
-        const win = (m.team1.players.some(p => p.name === data.player1.name) && m.team1.score > m.team2.score) || (m.team2.players.some(p => p.name === data.player1.name) && m.team2.score > m.team1.score);
+        // A 方在哪边就按哪边的比分判胜负，A 方一侧加粗
+        const aOnT1 = m.team1.players.some(p => p.id === aId);
+        const win = aOnT1 ? m.team1.score > m.team2.score : m.team2.score > m.team1.score;
         html += `<div class="match-history-item ${win ? '' : 'loss'}">
           <strong>${m.tournament}</strong> 第${m.edition}届 | ${m.date}<br>
-          ${t1} <strong>${m.team1.score} : ${m.team2.score}</strong> ${t2}
+          ${aOnT1 ? `<b>${t1}</b>` : t1} <strong>${m.team1.score} : ${m.team2.score}</strong> ${aOnT1 ? t2 : `<b>${t2}</b>`}
           <span style="float:right">${win ? '✅' : '❌'}</span>
         </div>`;
       }
@@ -2473,14 +2617,24 @@ const TEAM_ITEM_DEFS = [
 ];
 const TEAM_ITEM_MAP = Object.fromEntries(TEAM_ITEM_DEFS.map(d => [d.code, d]));
 
-// 赛制三选一
+// 赛制四选一。free = 非固搭双打（狗王杯那类）：没有固定组合，每场临时配对，名次记在个人头上
 const EVENT_FORMAT_DEFS = [
   { code: 'rr', name: '单循环赛', hasGroup: true },
   { code: 'ko', name: '淘汰赛', hasGroup: false },
-  { code: 'group_ko', name: '小组赛+淘汰赛', hasGroup: true }
+  { code: 'group_ko', name: '小组赛+淘汰赛', hasGroup: true },
+  { code: 'free', name: '非固搭双打', hasGroup: false }
 ];
 const EVENT_FORMAT_MAP = Object.fromEntries(EVENT_FORMAT_DEFS.map(f => [f.code, f]));
 const EVENT_BEST_OF_DEFS = [{ n: 1, name: '一局定胜负' }, { n: 3, name: '三局两胜' }];
+
+// 非固搭双打打哪个项目。它决定上场人的性别与按什么口径统计个人战绩。
+const FREE_KIND_DEFS = [
+  { code: 'md', name: '男双', hint: '只上男选手，只统计男选手的个人战绩' },
+  { code: 'wd', name: '女双', hint: '只上女选手' },
+  { code: 'xd', name: '混双', hint: '每场 2 男 2 女，每边固定 1 男 1 女' }
+];
+const FREE_KIND_MAP = Object.fromEntries(FREE_KIND_DEFS.map(k => [k.code, k]));
+const freeKindLabel = k => (FREE_KIND_MAP[k] || FREE_KIND_DEFS[0]).name;
 
 // 种子排序依据：只影响「蛇形分组的先后」和「纯淘汰赛的落位」，不影响任何比分计算。
 const SEED_BY_DEFS = [
@@ -2517,9 +2671,10 @@ const EVS = {
   host: 'events',        // events | match | query —— 工作台渲染进哪个容器
   editingId: null,       // 正在改赛制的赛事 id（null = 新建）
   showTies: false,       // 前台只读：对阵默认折叠，点「查看比赛详情」才展开
+  playerView: null,      // 最终排名点某人后进入的个人对局页 {entryId, memberId}；null = 不在该页
   draft: {
-    name: '', kind: 'individual', format: 'rr', bestOf: 3,
-    thirdPlace: false, groupCount: 2, advancePerGroup: 1,
+    name: '', kind: 'individual', format: 'rr', bestOf: 3, freeKind: 'md',
+    thirdPlace: false, lowerPlace: false, groupCount: 2, advancePerGroup: 1,
     seedBy: 'entry', groupMode: 'snake', koMode: 'seed',
     items: ['ms', 'ws', 'md']
   }
@@ -2532,11 +2687,13 @@ const evKindLabel = k => k === 'team' ? '团体赛' : '单项赛';
 const evEntryNoun = k => k === 'team' ? '参赛队伍' : '参赛选手';
 const evEntryUnit = k => k === 'team' ? '支' : '位';
 // 团体赛的队员名单折在最终排名里，不单独占一列
-function evMemberCellHtml(memberIds) {
+function evMemberCellHtml(memberIds, entryId) {
   const ids = memberIds || [];
   if (!ids.length) return '<td style="color:#a0aec0">—</td>';
+  // 展开后每个队员名字也是按钮：点进去只看他本人出场的项目
+  const names = ids.map(id => evNameBtnHtml(entryId, pn(id), id)).join('、');
   return `<td><details class="ev-roster"><summary>👥 ${ids.length} 人</summary>
-    <div class="ev-roster-body">${ids.map(id => htmlEsc(pn(id))).join('、')}</div></details></td>`;
+    <div class="ev-roster-body">${names}</div></details></td>`;
 }
 const evFormatLabel = f => (EVENT_FORMAT_MAP[f] || { name: f }).name;
 const evBestOfLabel = n => (parseInt(n) === 1 ? '一局定胜负' : '三局两胜');
@@ -2581,6 +2738,7 @@ function evItemPoolInner() {
 function evFormHtml() {
   const d = EVS.draft;
   const isTeam = d.kind === 'team';
+  const isFree = d.format === 'free';
   const editing = !!EVS.editingId;
   return `<div class="card">
     <h3>${editing ? '✏️ 修改赛制' : '➕ 新建赛事'}</h3>
@@ -2596,7 +2754,7 @@ function evFormHtml() {
       <div class="ev-sec-title">赛事类型</div>
       <div class="ev-radios">
         <label class="ev-radio ${!isTeam ? 'on' : ''}"><input type="radio" name="ev-kind" ${!isTeam ? 'checked' : ''} onchange="evSetKind('individual')">单项赛（按选手报名）</label>
-        <label class="ev-radio ${isTeam ? 'on' : ''}"><input type="radio" name="ev-kind" ${isTeam ? 'checked' : ''} onchange="evSetKind('team')">团体赛（按队伍报名）</label>
+        <label class="ev-radio ${isTeam ? 'on' : ''}"><input type="radio" name="ev-kind" ${isTeam ? 'checked' : ''} ${isFree ? 'disabled' : ''} onchange="evSetKind('team')">团体赛（按队伍报名）${isFree ? '<span class="ev-hint">（非固搭双打按个人参赛）</span>' : ''}</label>
       </div>
     </div>
 
@@ -2606,7 +2764,19 @@ function evFormHtml() {
         ${EVENT_FORMAT_DEFS.map(f => `<label class="ev-radio ${d.format === f.code ? 'on' : ''}">
           <input type="radio" name="ev-format" ${d.format === f.code ? 'checked' : ''} onchange="evSetFormat('${f.code}')">${f.name}</label>`).join('')}
       </div>
+      ${isFree ? `<div class="ev-hint" style="margin-top:6px">
+        没有固定搭档：每场 4 个人临时配成两对，名次记在<b>个人</b>头上（胜场 → 净胜分）。
+        一键排赛程会把所有人两两搭配的场次全部排出来（6 人 15 场、5 人 5 场、7 人 35 场）。
+      </div>` : ''}
     </div>
+
+    ${isFree ? `<div class="ev-sec">
+      <div class="ev-sec-title">项目 <span class="ev-hint">${FREE_KIND_MAP[d.freeKind].hint}</span></div>
+      <div class="ev-radios">
+        ${FREE_KIND_DEFS.map(k => `<label class="ev-radio ${d.freeKind === k.code ? 'on' : ''}">
+          <input type="radio" name="ev-freekind" ${d.freeKind === k.code ? 'checked' : ''} onchange="EVS.draft.freeKind='${k.code}';evRenderList()">${k.name}</label>`).join('')}
+      </div>
+    </div>` : ''}
 
     <div class="ev-sec">
       <div class="ev-sec-title">局制 <span class="ev-hint">每个单项打几局定胜负</span></div>
@@ -2649,7 +2819,7 @@ function evFormHtml() {
       </div>
     </div>` : ''}
 
-    ${d.format !== 'rr' ? `<div class="ev-sec">
+    ${d.format !== 'rr' && !isFree ? `<div class="ev-sec">
       <div class="ev-sec-title">淘汰赛对阵方式 <span class="ev-hint">${KO_MODE_MAP[d.koMode].hint}</span></div>
       <div class="ev-radios">
         ${KO_MODE_DEFS.map(k => `<label class="ev-radio ${d.koMode === k.code ? 'on' : ''}">
@@ -2660,6 +2830,12 @@ function evFormHtml() {
     <div class="ev-sec">
       <label class="ev-radio ${d.thirdPlace ? 'on' : ''}"><input type="checkbox" ${d.thirdPlace ? 'checked' : ''}
         onchange="EVS.draft.thirdPlace=this.checked;evRenderList()">设置季军赛</label>
+      <label class="ev-radio ${d.lowerPlace ? 'on' : ''}"><input type="checkbox" ${d.lowerPlace ? 'checked' : ''}
+        onchange="EVS.draft.lowerPlace=this.checked;evRenderList()">设置败者组（决 5~8 名）</label>
+      <div class="ev-hint" style="margin-top:6px">
+        败者组：未出线的人再打一个半决赛 + 名次赛，把 5~8 名也打出来。
+        <b>只有某一届正好 8 个参赛单元时才会生成</b>（2 组各出线 2 个），人数不对就当没勾。
+      </div>
     </div>` : ''}
 
     <div class="form-row" style="margin-top:18px">
@@ -2675,7 +2851,9 @@ function evSetKind(k) { EVS.draft.kind = k; evRenderList(); }
 function evSetBestOf(n) { EVS.draft.bestOf = parseInt(n) || 3; evRenderList(); }
 function evSetFormat(f) {
   EVS.draft.format = f;
-  if (f === 'rr') EVS.draft.thirdPlace = false;
+  if (f === 'rr') { EVS.draft.thirdPlace = false; EVS.draft.lowerPlace = false; }
+  // 非固搭双打按个人报名（搭档每场临时配），不存在队伍，选它就自动切回单项赛
+  if (f === 'free') EVS.draft.kind = 'individual';
   evRenderList();
 }
 function evToggleItem(code) {
@@ -2696,8 +2874,8 @@ function evMoveItem(code, dir) {
 
 function evDraftDefaults() {
   return {
-    name: '', kind: 'individual', format: 'rr', bestOf: 3,
-    thirdPlace: false, groupCount: 2, advancePerGroup: 1,
+    name: '', kind: 'individual', format: 'rr', bestOf: 3, freeKind: 'md',
+    thirdPlace: false, lowerPlace: false, groupCount: 2, advancePerGroup: 1,
     seedBy: 'entry', groupMode: 'snake', koMode: 'seed',
     items: ['ms', 'ws', 'md']
   };
@@ -2716,7 +2894,9 @@ function evCollectForm() {
   return {
     name: (document.getElementById('ev-name').value || '').trim(),
     kind: d.kind, format: d.format, best_of: d.bestOf,
+    free_kind: d.freeKind,
     third_place: !!d.thirdPlace,
+    lower_bracket: !!d.lowerPlace,
     group_count: gcEl ? (parseInt(gcEl.value) || 1) : 0,
     advance_per_group: apgEl ? (parseInt(apgEl.value) || 1) : 0,
     seed_by: d.seedBy, group_mode: d.groupMode, ko_mode: d.koMode,
@@ -2770,7 +2950,8 @@ async function evEditEvent(id) {
   EVS.editingId = id;
   EVS.draft = {
     name: e.name, kind: e.kind, format: e.format, bestOf: e.best_of || 3,
-    thirdPlace: !!e.third_place, groupCount: e.group_count || 1,
+    freeKind: e.free_kind || 'md',
+    thirdPlace: !!e.third_place, lowerPlace: !!e.lower_bracket, groupCount: e.group_count || 1,
     advancePerGroup: e.advance_per_group || 1, items,
     seedBy: e.seed_by || 'entry', groupMode: e.group_mode || 'snake', koMode: e.ko_mode || 'seed'
   };
@@ -2787,12 +2968,14 @@ async function evCancelEdit() {
 
 function evEventSummary(e) {
   const bits = [evKindLabel(e.kind), evFormatLabel(e.format), evBestOfLabel(e.best_of)];
+  if (e.format === 'free') bits.push(freeKindLabel(e.free_kind));
   if (e.kind === 'team' && e.item_count) bits.push(`${e.item_count} 项`);
   if (evFormatHasGroup(e.format)) bits.push(`${e.group_count || 1} 组 · ${groupModeLabel(e.group_mode)}`);
   if (e.format === 'group_ko') bits.push(`每组出线 ${e.advance_per_group || 1}`);
-  if (e.format !== 'rr') bits.push(koModeLabel(e.ko_mode));
-  bits.push(`种子：${seedByLabel(e.seed_by)}`);
+  if (e.format !== 'rr' && e.format !== 'free') bits.push(koModeLabel(e.ko_mode));
+  if (e.format !== 'free') bits.push(`种子：${seedByLabel(e.seed_by)}`);
   if (e.third_place) bits.push('季军赛');
+  if (e.lower_bracket) bits.push('败者组');
   return bits.join(' · ');
 }
 
@@ -2894,15 +3077,361 @@ async function evReload() {
 }
 
 function evRenderWorkspace() {
-  const html = evWorkspaceHtml(!EVS.readonly);
+  const html = EVS.playerView ? evPlayerViewHtml() : evWorkspaceHtml(!EVS.readonly);
   const el = evWorkspaceEl();
   if (el) el.innerHTML = html;
 }
 
 function evBack() {
+  // 在个人对局页按返回 → 退回赛事详情（而不是直接退回赛事列表）
+  if (EVS.playerView) { evClosePlayerView(); return; }
   if (EVS.host === 'match') { mEvBack(); return; }
   if (EVS.host === 'query') { closeTourDetail(); return; }
   evRenderList();
+}
+
+// ---------------- 最终排名 → 某人本届对局 ----------------
+//
+// 交互是两段式：点名字先弹一个「查看此人对局」的小气泡，点气泡才真的跳，
+// 避免手指在手机上误触名字就把页面跳走。
+
+// 名字里可能有引号/尖括号，进 onclick 前必须先转义，否则一堆看似正常的名字会炸
+function evNameBtnHtml(entryId, label, memberId) {
+  // 三个参数必须齐全（id, memberId, 元素），漏了 memberId 会把 DOM 元素当成 memberId
+  const arg = memberId ? `${entryId},${memberId}` : `${entryId},null`;
+  return `<span class="ev-ask-wrap"><span class="ev-name-btn" role="button" tabindex="0"
+    data-entry="${entryId}"${memberId ? ` data-member="${memberId}"` : ''}
+    onclick="evAskPlayer(${arg},this)">${htmlEsc(label)}</span></span>`;
+}
+
+function evAskPlayer(entryId, memberId, el) {
+  const key = `${entryId}:${memberId || 0}`;
+  const already = document.querySelector(`.ev-ask-bubble[data-key="${key}"]`);
+  evCloseAsk();
+  if (already) return;               // 再点同一个名字 = 收起气泡
+  if (!EVS.askBound) {
+    EVS.askBound = true;
+    // 点页面其他地方收起气泡。注意这个监听器是在本次 click 处理过程中挂上的，
+    // 同一次事件仍会冒泡到 document，所以要排除落在名字/气泡上的点击。
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.ev-name-btn') || e.target.closest('.ev-ask-bubble')) return;
+      evCloseAsk();
+    });
+  }
+  const b = document.createElement('span');
+  b.className = 'ev-ask-bubble';
+  b.dataset.key = key;
+  b.textContent = '查看此人对局';
+  b.setAttribute('role', 'button');
+  b.tabIndex = 0;
+  b.onclick = (e) => { e.stopPropagation(); evOpenPlayerMatches(entryId, memberId || null); };
+  b.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault(); evOpenPlayerMatches(entryId, memberId || null);
+  };
+  el.insertAdjacentElement('afterend', b);
+  evCloseAskOutsideFrames(b);
+  b.focus();
+}
+
+function evCloseAsk() { document.querySelectorAll('.ev-ask-bubble').forEach(n => n.remove()); }
+
+// 气泡可能被表格格子裁掉：如果它超出了可视区域，就把它翻到名字下方显示
+function evCloseAskOutsideFrames(b) {
+  const r = b.getBoundingClientRect();
+  if (r.top < 4) b.classList.add('below');
+}
+
+function evOpenPlayerMatches(entryId, memberId) {
+  evCloseAsk();
+  EVS.playerView = { entryId, memberId: memberId || null };
+  evRenderWorkspace();
+  // 详情页标题跟着变，用户一眼知道自己在看谁
+  const el = document.getElementById('detail-tour-title');
+  if (el && EVS.detail) el.textContent = `${EVS.detail.event.name} · ${evPlayerViewName()}`;
+  if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function evClosePlayerView() {
+  EVS.playerView = null;
+  evRenderWorkspace();
+  const el = document.getElementById('detail-tour-title');
+  if (el && EVS.detail) el.textContent = EVS.detail.event.name;
+}
+
+function evPlayerViewName() {
+  const d = EVS.detail;
+  if (!d || !EVS.playerView) return '';
+  const entry = d.entries.find(e => e.id === EVS.playerView.entryId);
+  if (EVS.playerView.memberId) return pn(EVS.playerView.memberId);
+  return entry ? entry.label : '';
+}
+
+// 败者组的场次叫法：半决赛 / 5-6 名决赛 / 7-8 名名次赛
+function evLowerStageLabel(t, d) {
+  const R = d.lower_rounds || 2;
+  if (t.ko_round < R) return '败者组半决赛';
+  return t.slot === 0 ? '5-6 名决赛' : '7-8 名名次赛';
+}
+
+// 某个 tie 属于哪个阶段：小组赛 / 淘汰轮次 / 季军赛 / 败者组
+function evStageLabel(t, d) {
+  if (t.stage === 'free') return `第 ${t.seq || 0} 场`;
+  if (t.stage === 'group') return `小组赛 · 第 ${t.group_no} 组`;
+  if (t.stage === 'third') return '季军赛';
+  if (t.stage === 'lower') return evLowerStageLabel(t, d);
+  const r = t.ko_round, R = d.ko_rounds;
+  if (r === R) return '决赛';
+  if (r === R - 1) return '半决赛';
+  return `淘汰赛 · 第 ${r} 轮`;
+}
+
+// ---------- 树状签表（参考中羽在线：左起首轮，逐级向右两两合并，冠军挂在最右） ----------
+
+// 轮次名走转播口径：8 进 4 是 1/4 决赛，16 进 8 是 1/8 决赛……
+function evRoundName(r, R) {
+  if (r >= R) return '决赛';
+  if (r === R - 1) return '半决赛';
+  return `1/${Math.pow(2, R - r)} 决赛`;
+}
+
+// 签表格子里的选手名：双打组合 "A + B" 紧凑成 "A+B"（加号淡色不带空格）。
+// 170px 窄列里 " + " 的两个空格要占 ~13px，是名字被 ellipsis 截断的主因之一。
+// 签表/冠军框里的名字：双打搭档竖排（A+ 换行 B，第二行缩进），单行高度只取决于最长单个名字，
+// 列宽能从 196px 收到 ~168px；管理端 slot 保持横排（v=false），列表行高不变。
+function bkNameHtml(label, v) {
+  const parts = String(label == null ? '' : label).split(/\s*\+\s*/);
+  if (v && parts.length === 2) {
+    return `${htmlEsc(parts[0])}<br><span class="bk-n2">${htmlEsc(parts[1])}</span>`;
+  }
+  return htmlEsc(label).replace(/\s*\+\s*/g, '<span class="bk-plus">+</span>');
+}
+
+// 签表格子里一行的比分：单项给逐局分（21 19），团体只给大场分
+function evBracketScoreHtml(t, d, side) {
+  const o = t.outcome || {};
+  if (d.event.kind === 'team') {
+    if (!o.perItem || !o.perItem.length) return '<span class="bk-sc"></span>';
+    return `<span class="bk-sc">${side === 1 ? (o.i1 || 0) : (o.i2 || 0)}</span>`;
+  }
+  const it = (t.items || [])[0];
+  if (!it || !it.games || !it.games.length) return '<span class="bk-sc"></span>';
+  return `<span class="bk-sc">${it.games.map(g => side === 1 ? g.s1 : g.s2).join(' ')}</span>`;
+}
+
+// 一个签表格子：上下两行（种子号 + 名字 + 比分），胜者绿底加粗
+function evBracketMatchHtml(t, d, ro, r, R) {
+  const win = t.winner_entry_id;
+  const st = t.stage === 'lower' ? 'lower' : 'ko';
+  const canSwap = !ro && EVS.canSwap && st === 'ko';
+  const played = !!(t.outcome && t.outcome.perItem && t.outcome.perItem.some(p => p.side !== 0 || p.w1 || p.w2));
+
+  function row(side) {
+    const id = side === 1 ? t.side1_entry_id : t.side2_entry_id;
+    const other = side === 1 ? t.side2_entry_id : t.side1_entry_id;
+    if (!id) {
+      return `<div class="bk-row empty"><span class="bk-seed"></span><span class="bk-name">${other ? '轮空' : '待定'}</span><span class="bk-sc"></span></div>`;
+    }
+    const ent = d.entries.find(e => e.id === id);
+    // 序号：淘汰赛身份标签优先（group_ko=A1/B2 小组名次，纯 KO=种子位），没有才显示种子排名。
+    // 这样半决赛「A1 VS B2」和对阵逻辑自洽，不会让人误以为种子错位。
+    const tag = ent ? (ent.qual_label || (ent.seed_rank ? String(ent.seed_rank) : '')) : '';
+    const seed = tag ? `<span class="bk-seed">${htmlEsc(tag)}</span>` : '<span class="bk-seed"></span>';
+    const cls = win ? (win === id ? 'win' : 'lose') : '';
+    const picked = canSwap && EVS.pick && EVS.pick.stage === st && EVS.pick.ko_round === t.ko_round
+      && EVS.pick.slot === t.slot && EVS.pick.side === side;
+    const onclick = canSwap
+      ? ` onclick="event.stopPropagation();evPickSwap(${t.ko_round},${t.slot},${side},'${st}')" title="点选手名字选中，再点另一个名字即可交换签位"`
+      : '';
+    return `<div class="bk-row ${cls}${picked ? ' picked' : ''}"${onclick}>${seed}<span class="bk-name">${bkNameHtml(evEntryLabel(d, id), true)}</span>${played ? evBracketScoreHtml(t, d, side) : '<span class="bk-sc"></span>'}</div>`;
+  }
+
+  // 竖线：偶数号位（一对里的上半个）往下走，奇数号位往上走，正好在两场中点汇合
+  const v = r < R ? `<i class="bk-v${t.slot % 2 ? ' up' : ''}"></i>` : '';
+  return `<div class="bk-m${EVS.expanded === t.id ? ' active' : ''}" onclick="evToggleTie(${t.id})">${row(1)}${row(2)}${v}</div>`;
+}
+
+// 管理端（比赛管理）用按轮分栏的列表：点开就能录比分、名字选中换签位，不占横向空间。
+// 树状签表只给前台查询页看。
+function evKOSectionHtml(d) {
+  const ko = d.ties.filter(t => t.stage === 'ko');
+  const tp = d.ties.filter(t => t.stage === 'third');
+  if (!ko.length && !tp.length) return '';
+  const R = Math.max.apply(null, ko.map(t => t.ko_round));
+  let h = '<div class="card"><h3>淘汰签表</h3>';
+  if (EVS.canSwap) {
+    h += `<div class="ev-hint">✋ 还没开打：点选手名字选中，再点另一个名字即可交换签位（同一轮内）。开打后签表锁定。</div>`;
+  }
+  for (let r = 1; r <= R; r++) {
+    h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">${evRoundName(r, R)}</div>`;
+    h += ko.filter(t => t.ko_round === r).sort((a, b) => a.slot - b.slot).map(t => evTieHtml(t, d, false, true)).join('');
+    h += `</div>`;
+  }
+  if (tp.length) {
+    h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">季军赛</div>`;
+    h += tp.map(t => evTieHtml(t, d, false, true)).join('');
+    h += `</div>`;
+  }
+  h += '</div>';
+  return h;
+}
+
+// 整棵签表：轮次列 + 冠军列。所有列等高、各列 space-around，
+// 于是第 r 轮第 k 场的中心刚好落在第 r-1 轮第 2k/2k+1 两场的中点上，连线才对得齐。
+function evBracketCardHtml(d, ro) {
+  const ko = d.ties.filter(t => t.stage === 'ko');
+  if (!ko.length) return '';
+  const R = Math.max.apply(null, ko.map(t => t.ko_round));
+  const rounds = [];
+  for (let r = 1; r <= R; r++) rounds.push(ko.filter(t => t.ko_round === r).sort((a, b) => a.slot - b.slot));
+  const n0 = rounds[0].length;
+  if (!n0) return '';
+
+  const canSwap = !ro && EVS.canSwap;
+  const finalTie = rounds[R - 1][0];
+  const champ = finalTie ? finalTie.winner_entry_id : null;
+
+  let h = `<div class="card ev-bk-card"><h3>淘汰签表</h3>`;
+  h += `<div class="ev-hint">${ro
+    ? '点任意一场可看逐局比分。选手左边的序号：小组+淘汰赛 = 小组名次（A1/B2），纯淘汰赛 = 种子位。'
+    : (canSwap
+      ? '✋ 还没开打：点选手名字选中，再点另一个名字即可交换签位（同一轮内）；点卡片其它位置展开录比分。'
+      : '点任意一场即可展开录入 / 修改比分。')}</div>`;
+  h += `<div class="bk-scroll"><div class="bk" style="--n:${n0}">`;
+  for (let r = 1; r <= R; r++) {
+    h += `<div class="bk-col${r === 1 ? ' bk-col-first' : ''}">
+      <div class="bk-col-title"><span>${evRoundName(r, R)}</span></div>
+      ${rounds[r - 1].map(t => evBracketMatchHtml(t, d, ro, r, R)).join('')}
+    </div>`;
+  }
+  h += `<div class="bk-col bk-col-champ"><div class="bk-col-title"><span>冠军</span></div>
+    <div class="bk-champ">${champ ? `🏆 <b>${bkNameHtml(evEntryLabel(d, champ), true)}</b>` : '<span class="bk-empty">待定</span>'}</div>
+  </div>`;
+  h += `</div></div>`;
+
+  // 季军赛不属于主树（负者汇合，不是两两合并），单独挂一小格在下面
+  const third = d.ties.filter(t => t.stage === 'third');
+  if (third.length) {
+    h += `<div class="bk-third"><div class="bk-third-title">季军赛</div>
+      <div class="bk-third-match">${third.map(t => evBracketMatchHtml(t, d, ro, R, R)).join('')}</div></div>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
+// 签表里被点开的那一场：把录入/详情面板挂在签表下方，避免撑坏树状布局
+function evBracketEditorHtml(d, ro) {
+  if (!EVS.expanded) return '';
+  const t = d.ties.find(x => x.id === EVS.expanded && (x.stage === 'ko' || x.stage === 'third'));
+  if (!t) return '';
+  const l1 = t.side1_entry_id ? evEntryLabel(d, t.side1_entry_id) : '待定';
+  const l2 = t.side2_entry_id ? evEntryLabel(d, t.side2_entry_id) : '待定';
+  return `<div class="card ev-bk-editor"><h3>${evStageLabel(t, d)}：${htmlEsc(l1)} VS ${htmlEsc(l2)}
+    <button class="ev-mini" style="float:right" onclick="evToggleTie(${t.id})">收起</button></h3>
+    ${evTieBodyHtml(t, d, ro, !!(t.side1_entry_id && t.side2_entry_id))}</div>`;
+}
+
+function evPlayerViewHtml() {
+  const d = EVS.detail;
+  if (!d) return '';
+  const pv = EVS.playerView;
+  const entry = d.entries.find(e => e.id === pv.entryId);
+  if (!entry) return '';
+  const name = evPlayerViewName();
+  const isMember = !!pv.memberId;
+  const unitName = isMember ? `${name} <span class="ev-hint">（${htmlEsc(entry.label)}）</span>` : htmlEsc(name);
+  const fr = d.final_ranks.find(r => r.entry_id === pv.entryId);
+  const rankTip = fr ? `本届第 ${fr.rank} 名` : '';
+
+  // 只取这个参赛单元打过的对局（双方都已确定）
+  // 非固搭双打一侧是两个人临时搭档，所以第二个人（sideN_entry2_id）也要认
+  const inTie = t => t.side1_entry_id === pv.entryId || t.side1_entry2_id === pv.entryId
+    || t.side2_entry_id === pv.entryId || t.side2_entry2_id === pv.entryId;
+  const ties = d.ties.filter(t => inTie(t) && t.side1_entry_id && t.side2_entry_id);
+  // 按实际赛程先后排：小组赛 → 淘汰赛（轮次升序）→ 季军赛 → 败者组
+  const ord = t => t.stage === 'group' ? [0, t.group_no, t.seq || 0, t.id]
+    : t.stage === 'free' ? [0, 0, t.seq || 0, t.id]
+      : t.stage === 'ko' ? [1, t.ko_round, t.slot, t.id]
+        : t.stage === 'third' ? [2, 0, 0, t.id]
+          : [3, t.ko_round, t.slot, t.id];
+  ties.sort((a, b) => { const A = ord(a), B = ord(b); for (let i = 0; i < 4; i++) if (A[i] !== B[i]) return A[i] - B[i]; return 0; });
+
+  let rows = '';
+  let wins = 0, losses = 0;
+  for (const t of ties) {
+    const mySide = (t.side1_entry_id === pv.entryId || t.side1_entry2_id === pv.entryId) ? 1 : 2;
+    // 非固搭双打一场是「两人 : 两人」，其余赛制一边就是一个单元
+    const sideLabel = s => (s === 1 ? [t.side1_entry_id, t.side1_entry2_id] : [t.side2_entry_id, t.side2_entry2_id])
+      .filter(Boolean).map(x => evEntryLabel(d, x)).join(' ＋ ');
+    const oppLabel = sideLabel(3 - mySide);
+    const myLabel = d.event.format === 'free' ? sideLabel(mySide) : name;
+    // 团体赛且点的是具体队员：只保留他出场的项目；单项赛所有项目天然就是他的
+    let items = t.items || [];
+    if (isMember && d.event.kind === 'team') {
+      items = items.filter(it => ((mySide === 1 ? it.side1_players : it.side2_players) || []).includes(pv.memberId));
+    }
+    // 比分一律按「本人 : 对手」的方向显示
+    const scoreOf = it => (it.games || []).map(g => {
+      const a = mySide === 1 ? g.s1 : g.s2, b = mySide === 1 ? g.s2 : g.s1;
+      return `${a} : ${b}`;
+    }).join('　');
+    const playedBond = items.some(it => (it.games || []).length > 0) ||
+      !!(t.outcome && t.outcome.perItem && t.outcome.perItem.some(p => p.side !== 0 || p.w1 || p.w2));
+
+    // 真正打过的项目：没打的项目（例如三局两胜 2:0 后的第三项）不能算进个人战绩
+    const playedItems = items.filter(it => (it.games || []).length > 0 || it.winner_side);
+    const tieRes = t.winner_entry_id === pv.entryId ? '胜'
+      : t.winner_entry_id ? '负' : (playedBond ? '进行中' : '未开打');
+    const lineScore = it => scoreOf(it) || '—';
+    const lineRes = it => it.winner_side ? (it.winner_side === mySide ? '胜' : '负') : (playedBond ? '进行中' : '未开打');
+
+    let scoreCell, resCell, resCls = 'pending';
+    if (!playedBond) {
+      scoreCell = '<span class="ev-pv-none">未开打</span>';
+      resCell = '<span class="ev-pv-none">—</span>';
+    } else if (!playedItems.length) {
+      scoreCell = '<span class="ev-pv-none">未出场</span>';
+      resCell = '<span class="ev-pv-none">—</span>';
+    } else if (playedItems.length === 1) {
+      // 单项赛（以及只出场一个项目的队员）：一整行的比分 + 一个结果，最紧凑
+      const it = playedItems[0];
+      const nm = (it.name && it.name !== '比赛') ? `<span class="ev-pv-itemname">${htmlEsc(it.name)}</span>` : '';
+      scoreCell = `<div class="ev-pv-item">${nm}<b>${lineScore(it)}</b></div>`;
+      const r = lineRes(it) || tieRes;
+      resCls = r === '胜' ? 'win' : r === '负' ? 'lose' : 'pending';
+      resCell = r;
+      if (r === '胜') wins++; else if (r === '负') losses++;
+    } else {
+      // 团体赛同一场里这个人打了多个项目：比分与结果按项目分行，左右两列一一对应
+      scoreCell = playedItems.map(it => `<div class="ev-pv-item"><span class="ev-pv-itemname">${htmlEsc(it.name || '比赛')}</span><b>${lineScore(it)}</b></div>`).join('');
+      const lines = playedItems.map(it => lineRes(it) || tieRes);
+      resCls = lines.every(x => x === '胜') ? 'win' : lines.every(x => x === '负') ? 'lose' : 'pending';
+      resCell = lines.map(x => `<div class="ev-pv-item ${x === '胜' ? 'r-win' : x === '负' ? 'r-lose' : 'r-pending'}">${x}</div>`).join('');
+      wins += lines.filter(x => x === '胜').length;
+      losses += lines.filter(x => x === '负').length;
+    }
+
+    rows += `<tr>
+      <td class="ev-pv-stage">${evStageLabel(t, d)}</td>
+      <td class="ev-pv-opp">${htmlEsc(myLabel)} <b class="ev-pv-vs">:</b> ${htmlEsc(oppLabel)}</td>
+      <td class="ev-pv-score">${scoreCell}</td>
+      <td class="ev-pv-res ${resCls}">${resCell}</td>
+    </tr>`;
+  }
+
+  let h = `<div class="ev-head">
+    <button class="back-btn" onclick="evClosePlayerView()" title="返回最终排名"><span class="back-arrow"></span>返回</button>
+    <h2>${unitName} <span class="ev-hint">${htmlEsc(d.event.name)} 第 ${d.edition.edition} 届${rankTip ? ' · ' + rankTip : ''}</span></h2>
+  </div>`;
+  h += `<div class="card"><h3>本届对局 <span class="ev-hint">${ties.length} 场${ties.length ? `　胜 ${wins} / 负 ${losses}` : ''}</span></h3>`;
+  if (!ties.length) {
+    h += `<div class="ev-empty">这个人本届还没有已确定的对局</div>`;
+  } else {
+    h += `<table class="ev-pv"><thead><tr><th>阶段</th><th>对局</th><th>比分（本人 : 对手）</th><th>结果</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  h += `</div>`;
+  return h;
 }
 
 // 前台「赛事查询」点赛事图标时走这里（只读）。
@@ -2940,10 +3469,13 @@ async function evGenGroups(edId) {
 async function evGenKO(edId) {
   const has = EVS.detail && EVS.detail.ties.some(t => t.stage === 'ko');
   if (has && !confirm('重新生成淘汰签表？\n现有淘汰赛比分会被清空。')) return;
+  const wantLower = !!(EVS.detail && EVS.detail.lower_bracket);
   try {
-    await api(`/api/editions/${edId}/generate-ko`, { method: 'POST', body: '{}' });
+    const r = await api(`/api/editions/${edId}/generate-ko`, { method: 'POST', body: '{}' });
     EVS.expanded = null;
     await evReload();
+    // 开了败者组却没生成出来（人数不对 / 小组赛没打完）时说清楚，别让用户以为勾了没用
+    if (wantLower && r.lower_reason) alert('败者组没生成：' + r.lower_reason);
   } catch (e) { alert('生成失败: ' + e.message); }
 }
 
@@ -2958,7 +3490,9 @@ function evWorkspaceHtml(withHead) {
   if (!d) return '';
   const ev = d.event, ed = d.edition, ro = EVS.readonly;
   const koTies = d.ties.filter(t => t.stage === 'ko');
-  EVS.canSwap = koTies.length > 0 && !d.ties.some(t => (t.stage === 'ko' || t.stage === 'third') && t.winner_entry_id);
+  // 主签表与败者组共用「还没开打就能调」的状态：任何一方出结果就锁死
+  EVS.canSwap = (koTies.length > 0 || d.ties.some(t => t.stage === 'lower'))
+    && !d.ties.some(t => (t.stage === 'ko' || t.stage === 'third' || t.stage === 'lower') && t.winner_entry_id);
 
   let h = '';
   if (withHead) {
@@ -2970,13 +3504,22 @@ function evWorkspaceHtml(withHead) {
       <span class="ev-tag">${evBestOfLabel(ev.best_of)}</span>
       <span class="ev-tag ${ed.status === 'done' ? 'done' : 'draft'}">${evStatusLabel(ed.status)}</span>
       <div class="ev-head-actions">
-        ${evFormatHasGroup(ev.format) ? `<button onclick="evGenGroups(${ed.id})">🎲 ${d.ties.some(t => t.stage === 'group') ? '重新生成' : '生成'}循环对阵</button>` : ''}
-        ${ev.format !== 'rr' ? `<button onclick="evGenKO(${ed.id})">🏆 ${koTies.length ? '重新生成' : '生成'}淘汰签表</button>` : ''}
+        ${ev.format === 'free'
+    ? `<button onclick="evGenFree(${ed.id})">🎲 ${d.ties.some(t => t.stage === 'free') ? '补齐' : '生成'}全部对局</button>`
+    : `${evFormatHasGroup(ev.format) ? `<button onclick="evGenGroups(${ed.id})">🎲 ${d.ties.some(t => t.stage === 'group') ? '重新生成' : '生成'}循环对阵</button>` : ''}
+        ${ev.format !== 'rr' ? `<button onclick="evGenKO(${ed.id})">🏆 ${koTies.length ? '重新生成' : '生成'}淘汰签表</button>` : ''}`}
       </div>
     </div>`;
   }
 
   h += evBriefHtml(d, ro);
+  // 非固搭双打没有小组 / 淘汰，界面就是「一场场录 4 人临时配对」+ 一张个人成绩表
+  if (ev.format === 'free') {
+    if (!ro) h += evFreeEntryHtml(d);
+    h += evFreeRankHtml(d);
+    h += evFreeTiesHtml(d, ro);
+    return h;
+  }
   if (ro) {
     // 前台只读：和老赛事卡片一个样式 —— 默认只给「最终排名（含积分）」，
     // 小组积分榜 + 逐场对阵全部折进「查看比赛详情」，别一进来就把所有比分摊开。
@@ -2987,20 +3530,24 @@ function evWorkspaceHtml(withHead) {
       h += `<div class="card"><div class="ev-empty">该赛事还没有赛况</div></div>`;
       return h;
     }
+    // 有淘汰赛就默认把树状签表摊开给用户看（中羽在线那种左→右合并的样式），
+    // 逐场比分靠点格子展开，就不再塞进「查看比赛详情」里重复一遍。
+    h += evBracketCardHtml(d, ro) + evBracketEditorHtml(d, ro);
     h += `<button class="ev-detail-toggle" onclick="evToggleTies()">📊 ${EVS.showTies ? '收起比赛详情' : '查看比赛详情'}</button>`;
     if (EVS.showTies) {
       // 有总排名时积分榜也被折起来了，展开要一起给回来
       if (hasFinal) h += evGroupSectionHtml(d, ro, 'standings');
-      h += evGroupSectionHtml(d, ro, 'ties') + evKOSectionHtml(d, ro, 'ties');
+      h += evGroupSectionHtml(d, ro, 'ties') + evLowerSectionHtml(d, ro, 'ties');
     }
     return h;
   }
   const groupHtml = evGroupSectionHtml(d, ro);
-  const koHtml = evKOSectionHtml(d, ro);
-  if (!groupHtml && !koHtml) {
+  const koHtml = evKOSectionHtml(d);
+  const lowerHtml = evLowerSectionHtml(d, ro);
+  if (!groupHtml && !koHtml && !lowerHtml) {
     h += `<div class="card"><div class="ev-empty">还没有对阵。先点右上角「生成循环对阵」或「生成淘汰签表」。</div></div>`;
   }
-  h += groupHtml + koHtml;
+  h += groupHtml + koHtml + lowerHtml + evLowerSwitchHtml(d);
   h += evFinalHtml(d);
   return h;
 }
@@ -3014,10 +3561,11 @@ function evBriefHtml(d, ro) {
     <div class="ev-brief">
       <div>赛事名称：<b>${htmlEsc(ev.name)}</b>　届次：<b>第 ${ed.edition} 届</b>　日期：<b>${ed.date || '—'}</b>　级别：<b>${ed.level}级</b></div>
       <div>类型：<b>${evKindLabel(ev.kind)}</b>　赛制：<b>${evFormatLabel(ev.format)}</b>　局制：<b>${evBestOfLabel(ev.best_of)}</b>
+        ${ev.format === 'free' ? `　项目：<b>${freeKindLabel(ev.free_kind)}</b>` : ''}
         ${evFormatHasGroup(ev.format) ? `　小组数：<b>${ev.group_count}</b>（${groupModeLabel(ev.group_mode)}）` : ''}
         ${ev.format === 'group_ko' ? `　每组出线：<b>${ev.advance_per_group}</b>` : ''}
-        ${ev.third_place ? '　<b>设季军赛</b>' : ''}</div>
-      <div>种子依据：<b>${seedByLabel(ev.seed_by)}</b>${ev.format !== 'rr' ? `　淘汰对阵：<b>${koModeLabel(ev.ko_mode)}</b>` : ''}</div>
+        ${ev.third_place ? '　<b>设季军赛</b>' : ''}${d.lower_bracket ? '　<b>设败者组（决 5~8 名）</b>' : ''}</div>
+      ${ev.format === 'free' ? '' : `<div>种子依据：<b>${seedByLabel(ev.seed_by)}</b>${ev.format !== 'rr' ? `　淘汰对阵：<b>${koModeLabel(ev.ko_mode)}</b>` : ''}</div>`}
       ${ev.kind === 'team' ? `<div>团体项目（按出场顺序）：<b>${htmlEsc(items)}</b></div>` : ''}
       <div>${evEntryNoun(ev.kind)}：<b>${d.entries.length}</b> ${evEntryUnit(ev.kind)}　
         <span style="color:#a0aec0;font-size:13px">${d.entries.map(e => htmlEsc(e.label)).join('、')}</span></div>
@@ -3057,32 +3605,83 @@ function evGroupSectionHtml(d, ro, part) {
   return h;
 }
 
-function evKOSectionHtml(d, ro, part) {
-  if (ro && part !== 'ties') return '';   // 前台只读：签表折在「查看比赛详情」里
-  const ko = d.ties.filter(t => t.stage === 'ko');
-  const tp = d.ties.filter(t => t.stage === 'third');
-  if (!ko.length && !tp.length) return '';
-  const R = d.ko_rounds;
-  let h = '<div class="card"><h3>淘汰签表</h3>';
-  if (!ro && EVS.canSwap) {
-    h += `<div style="font-size:12px;color:#718096;margin-bottom:10px">✋ 还没开打，点任意两个队伍位置即可交换（同一轮内）。开打后签表锁定。</div>`;
-  }
+// 败者组（未出线者再打一个小淘汰，决出 5~8 名）。
+// 结构与主签表同构：首轮半决赛 → 末轮 slot 0 是 5-6 名决赛、slot 1 是 7-8 名名次赛。
+function evLowerSectionHtml(d, ro, part) {
+  const lower = d.ties.filter(t => t.stage === 'lower');
+  if (!lower.length) return '';
+  const R = Math.max(...lower.map(t => t.ko_round));
+  let h = '<div class="card"><h3>败者组 <span class="ev-hint">未出线者决 5~8 名</span></h3>';
   for (let r = 1; r <= R; r++) {
-    const label = r === R ? '决赛' : (r === R - 1 ? '半决赛' : `第 ${r} 轮`);
-    h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">${label}</div>`;
-    h += ko.filter(t => t.ko_round === r).sort((a, b) => a.slot - b.slot).map(t => evTieHtml(t, d, ro, true)).join('');
-    h += `</div>`;
-  }
-  if (tp.length) {
-    h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">季军赛</div>`;
-    h += tp.map(t => evTieHtml(t, d, ro, true)).join('');
-    h += `</div>`;
+    const round = lower.filter(t => t.ko_round === r).sort((a, b) => a.slot - b.slot);
+    if (r < R) {
+      h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">败者组半决赛</div>`;
+      h += round.map(t => evTieHtml(t, d, ro, true)).join('');
+      h += `</div>`;
+    } else {
+      const f = round.filter(t => t.slot === 0), s = round.filter(t => t.slot === 1);
+      if (f.length) {
+        h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">5-6 名决赛</div>`;
+        h += f.map(t => evTieHtml(t, d, ro, true)).join('') + `</div>`;
+      }
+      if (s.length) {
+        h += `<div class="ev-bracket-round"><div class="ev-bracket-round-title">7-8 名名次赛</div>`;
+        h += s.map(t => evTieHtml(t, d, ro, true)).join('') + `</div>`;
+      }
+    }
   }
   h += '</div>';
   return h;
 }
 
+// 本届败者组开关：只有正好 8 个参赛单元时才给这个选项 ——
+// 8 人 = 2 组各出线 2 个，剩下的 4 个刚好也能凑一个半决赛 + 名次赛，把 5~8 名打出来。
+function evLowerSwitchHtml(d) {
+  const ev = d.event;
+  if (EVS.readonly || ev.format !== 'group_ko' || d.entries.length !== 8) return '';
+  const on = !!d.lower_bracket;
+  return `<div class="card">
+    <h3>后几名对阵 <span class="ev-hint">本届正好 8 ${evEntryUnit(ev.kind)}${evEntryNoun(ev.kind)}</span></h3>
+    <label class="ev-radio ${on ? 'on' : ''}"><input type="checkbox" ${on ? 'checked' : ''}
+      onchange="evToggleLower(this.checked)">设置败者组（决 5~8 名）</label>
+    <div class="ev-hint" style="margin-top:6px">
+      勾选后点右上角「重新生成淘汰签表」即生成：小组未出线的 4 个先打半决赛，
+      胜者打 5-6 名决赛、负者打 7-8 名名次赛。开关只对这一届生效。
+    </div>
+  </div>`;
+}
+
+async function evToggleLower(on) {
+  const edId = EVS.detail.edition.id;
+  try {
+    const r = await api(`/api/editions/${edId}/lower-bracket`, { method: 'PUT', body: JSON.stringify({ on: !!on }) });
+    await evReload();
+    if (r.reason) alert('败者组暂时没生成：' + r.reason + '\n把小组赛打完后再点「重新生成淘汰签表」即可。');
+  } catch (e) { alert('设置失败: ' + e.message); await evReload(); }
+}
+
+// 折叠状态下那一行显示什么比分。
+// 单项赛事只有 1 个比赛项目，大场分 i1:i2 恒为 1:0 / 0:1，横竖没信息，所以单项一律不看大场分：
+//   一局定胜负 → 直接端出那一局的实际比分（21 : 15）
+//   三局两胜   → 显示赢了几局（2 : 1）
+// 团体赛是真「几项对几项」，保留大场分（3 : 2）。
+function evTieHeadScore(t, d) {
+  const o = t.outcome || {};
+  if (d.event.kind !== 'team') {
+    const bo = parseInt(d.best_of, 10) || 3;
+    const it = (t.items || [])[0];
+    const g = it && it.games && it.games[0];
+    if (bo === 1) {
+      if (g && g.s1 !== '' && g.s1 != null && g.s2 !== '' && g.s2 != null) return `${g.s1} : ${g.s2}`;
+    } else if (o.g1 != null && o.g2 != null) {
+      return `${o.g1} : ${o.g2}`;
+    }
+  }
+  return `${o.i1} : ${o.i2}`;
+}
+
 function evTieHtml(t, d, ro, bracket) {
+  const st = t.stage === 'lower' ? 'lower' : 'ko';
   const win = t.winner_entry_id;
   const both = t.side1_entry_id && t.side2_entry_id;
   const o = t.outcome;
@@ -3095,15 +3694,15 @@ function evTieHtml(t, d, ro, bracket) {
     const label = side === 1 ? l1 : l2;
     const cls = !id ? 'empty' : (win ? (win === id ? 'win' : 'lose') : '');
     const canPick = !ro && bracket && EVS.canSwap && !!id;
-    const picked = EVS.pick && EVS.pick.ko_round === t.ko_round && EVS.pick.slot === t.slot && EVS.pick.side === side;
+    const picked = EVS.pick && EVS.pick.stage === st && EVS.pick.ko_round === t.ko_round && EVS.pick.slot === t.slot && EVS.pick.side === side;
     return `<span class="ev-slot ${cls} ${canPick ? 'pickable' : ''} ${picked ? 'picked' : ''}"
-      ${canPick ? `onclick="event.stopPropagation();evPickSwap(${t.ko_round},${t.slot},${side})" title="点击后点另一个位置即可交换"` : ''}>${htmlEsc(label)}</span>`;
+      ${canPick ? `onclick="event.stopPropagation();evPickSwap(${t.ko_round},${t.slot},${side},'${st}')" title="点击后点另一个位置即可交换"` : ''}>${bkNameHtml(label)}</span>`;
   }
 
   // 三种状态必须分开：一方都没打 → 未录入（不能显示 0 : 0，否则像是真打出 0 比 0）；
   // 打了一半 → 进行中（此时的 i1:i2 是有意义的中途大场分）；赢了 → 已结束。
   const played = !!(o && o.perItem && o.perItem.some(p => p.side !== 0 || p.w1 || p.w2));
-  const score = (both && played) ? `${o.i1} : ${o.i2}` : '';
+  const score = (both && played) ? evTieHeadScore(t, d) : '';
   const flag = win ? '<span class="ev-tie-flag done">已结束</span>'
     : (!both ? '<span class="ev-tie-flag pending">待定</span>'
       : (played ? '<span class="ev-tie-flag pending">进行中</span>' : '<span class="ev-tie-flag pending">未录入</span>'));
@@ -3207,8 +3806,9 @@ function evFinalHtml(d) {
     const cls = r.rank === 1 ? 'top1' : r.rank === 2 ? 'top2' : r.rank === 3 ? 'top3' : '';
     const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : r.rank;
     // 单项赛：参赛单元就是选手本人，再列一遍「成员」纯属重复，不显示
-    return `<tr class="${cls}"><td>${medal}</td><td>${htmlEsc(r.label)}</td>
-      ${isTeam ? evMemberCellHtml(r.member_ids) : ''}
+    // 名字做成按钮：两段式（点一下弹「查看此人对局」气泡，点气泡才跳），见 evAskPlayer
+    return `<tr class="${cls}"><td>${medal}</td><td>${evNameBtnHtml(r.entry_id, r.label)}</td>
+      ${isTeam ? evMemberCellHtml(r.member_ids, r.entry_id) : ''}
       ${hasPts ? `<td class="ev-final-pts">${r.points == null ? '—' : r.points}</td>` : ''}</tr>`;
   }).join('');
   return `<div class="card"><h3>最终排名 <span class="ev-hint">${hasPts ? '积分按本届级别折算，与总积分榜同一个数' : '该名次会按本届级别折算成积分并计入总积分榜'}</span></h3>
@@ -3216,6 +3816,143 @@ function evFinalHtml(d) {
     ${isTeam ? '<th class="ev-member-col">成员</th>' : ''}
     ${hasPts ? '<th class="ev-final-pts">积分</th>' : ''}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
+}
+
+// ---------------- 非固搭双打：一场场录 4 人临时配对 + 个人成绩表 ----------------
+
+// 上场人选按项目过滤：男双只列男选手、女双只列女选手、混双男女都列（每边 1 男 1 女由后端卡）
+function evFreePlayerOpts(kind) {
+  const g = kind === 'md' ? 'male' : kind === 'wd' ? 'female' : null;
+  return '<option value="">选择选手</option>' + cachedPlayers
+    .filter(p => !g || p.gender === g)
+    .slice().sort((a, b) => displayName(a).localeCompare(displayName(b), 'zh'))
+    .map(p => `<option value="${p.id}">${htmlEsc(displayName(p))}${g ? '' : `（${p.gender === 'male' ? '男' : '女'}）`}</option>`)
+    .join('');
+}
+
+function evFreeEntryHtml(d) {
+  const kind = d.event.free_kind || 'md';
+  const bo = parseInt(d.best_of, 10) || 3;
+  const opts = evFreePlayerOpts(kind);
+  const gameRows = Array.from({ length: bo }, (_, i) => `<div class="ev-free-row">
+      <span class="ev-free-side">${bo === 1 ? '比分' : `第 ${i + 1} 局`}</span>
+      <input type="number" id="ef-g${i}-1" min="0" placeholder="0">
+      <span class="ev-free-colon">:</span>
+      <input type="number" id="ef-g${i}-2" min="0" placeholder="0">
+    </div>`).join('');
+  return `<div class="card">
+    <h3>➕ 录入一场 <span class="ev-hint">${freeKindLabel(kind)}　4 人临时配成两对；同样 4 个人同样搭法再录 = 改这场比分，换一种搭法 = 新的一场</span></h3>
+    <div class="ev-free-row">
+      <span class="ev-free-side">左方</span>
+      <select id="ef-p1">${opts}</select>
+      <select id="ef-p2">${opts}</select>
+    </div>
+    <div class="ev-free-row">
+      <span class="ev-free-side">右方</span>
+      <select id="ef-p3">${opts}</select>
+      <select id="ef-p4">${opts}</select>
+    </div>
+    ${gameRows}
+    <div class="form-row">
+      <button onclick="evSaveFreeMatch()">✅ 保存这一场</button>
+      <span id="ev-free-msg" style="font-size:13px"></span>
+    </div>
+  </div>`;
+}
+
+function evFreeMsg(t, ok) {
+  const el = document.getElementById('ev-free-msg');
+  if (!el) { if (t) alert(t); return; }
+  el.style.color = ok ? '#38a169' : '#e53e3e';
+  el.textContent = t;
+}
+
+async function evSaveFreeMatch() {
+  const d = EVS.detail;
+  const ids = ['ef-p1', 'ef-p2', 'ef-p3', 'ef-p4'].map(x => parseInt((document.getElementById(x) || {}).value) || 0);
+  if (ids.some(x => !x)) return evFreeMsg('请选择 4 名选手');
+  if (new Set(ids).size !== 4) return evFreeMsg('同一场的 4 名选手不能重复');
+  const bo = parseInt(d.best_of, 10) || 3;
+  const games = [];
+  for (let i = 0; i < bo; i++) {
+    const a = document.getElementById(`ef-g${i}-1`), b = document.getElementById(`ef-g${i}-2`);
+    const v1 = a && a.value !== '' ? parseInt(a.value) : NaN;
+    const v2 = b && b.value !== '' ? parseInt(b.value) : NaN;
+    if (!isNaN(v1) && !isNaN(v2)) games.push({ s1: v1, s2: v2 });
+  }
+  if (!games.length) return evFreeMsg('请填写比分');
+  evFreeMsg('保存中...', true);
+  try {
+    await api(`/api/editions/${d.edition.id}/free-match`, {
+      method: 'POST', body: JSON.stringify({ p1: ids[0], p2: ids[1], p3: ids[2], p4: ids[3], games })
+    });
+    cachedPlayers = [];
+    invalidatePlayerQueryCache();
+    await evReload();
+    evFreeMsg('✅ 已保存');
+  } catch (e) { evFreeMsg(e.message); }
+}
+
+async function evDeleteFreeMatch(edId, tieId) {
+  if (!confirm('删除这一场及其比分？')) return;
+  try {
+    await api(`/api/editions/${edId}/free-match/${tieId}`, { method: 'DELETE' });
+    cachedPlayers = [];
+    invalidatePlayerQueryCache();
+    await evReload();
+  } catch (e) { alert('删除失败: ' + e.message); }
+}
+
+async function evGenFree(edId) {
+  const d = EVS.detail;
+  const n = d.entries.length;
+  if (!confirm(`本届 ${n} 人，将把所有人两两搭配的对局一次排出来（搭档轮换尽量平均）。\n已录过比分的场次不会动，只补缺的。\n继续？`)) return;
+  try {
+    const r = await api(`/api/editions/${edId}/free-generate`, { method: 'POST', body: '{}' });
+    await evReload();
+    alert(`已补 ${r.added} 场，本届共 ${r.total} 场。${r.dropped ? `\n另有 ${r.dropped} 场因有人退出名单被作废。` : ''}`);
+  } catch (e) { alert('生成失败: ' + e.message); }
+}
+
+// 成绩表：名次记在个人头上（胜场 → 净胜分，并列同名次、积分取平均）
+function evFreeRankHtml(d) {
+  const rows = d.final_ranks || [];
+  let h = `<div class="card"><h3>选手排名 <span class="ev-hint">胜场 → 净胜分；并列同名次，积分取所跨名次的平均值</span></h3>`;
+  if (!rows.length) return h + `<div class="ev-empty">还没有打出成绩，录完第一场就有了</div></div>`;
+  h += `<table class="ev-final"><thead><tr><th style="width:70px">名次</th><th>选手</th>
+    <th>胜</th><th>负</th><th>净胜分</th><th class="ev-final-pts">积分</th></tr></thead><tbody>`;
+  for (const r of rows) {
+    const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : r.rank;
+    const cls = r.rank === 1 ? 'top1' : r.rank === 2 ? 'top2' : r.rank === 3 ? 'top3' : '';
+    h += `<tr class="${cls}"><td>${medal}</td><td>${evNameBtnHtml(r.entry_id, r.label)}</td>
+      <td>${r.wins}</td><td>${r.losses}</td>
+      <td>${r.net_points > 0 ? '+' : ''}${r.net_points}</td>
+      <td class="ev-final-pts">${r.points == null ? '—' : r.points}</td></tr>`;
+  }
+  return h + '</tbody></table></div>';
+}
+
+function evFreeTiesHtml(d, ro) {
+  const ties = (d.ties || []).filter(t => t.stage === 'free').slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  const nm = id => { const e = d.entries.find(x => x.id === id); return e ? e.label : '?'; };
+  let h = `<div class="card"><h3>对局 <span class="ev-hint">共 ${ties.length} 场</span></h3>`;
+  if (!ties.length) {
+    return h + `<div class="ev-empty">还没有对局。点右上角「🎲 生成全部对局」一次排完，或用上面的表单一场场录。</div></div>`;
+  }
+  h += `<table class="ev-free"><thead><tr><th style="width:52px">#</th><th>左方</th><th>比分</th><th>右方</th>
+    ${ro ? '' : '<th style="width:64px">操作</th>'}</tr></thead><tbody>`;
+  ties.forEach((t, i) => {
+    const games = ((t.items || [])[0] || {}).games || [];
+    const score = games.length ? games.map(g => `${g.s1} : ${g.s2}`).join('　') : '<span class="ev-hint">未打</span>';
+    const w = t.winner_entry_id ? (t.winner_entry_id === t.side1_entry_id ? 1 : 2) : 0;
+    h += `<tr><td>${i + 1}</td>
+      <td class="${w === 1 ? 'ev-free-win' : ''}">${htmlEsc(nm(t.side1_entry_id))} ＋ ${htmlEsc(nm(t.side1_entry2_id))}</td>
+      <td><b>${score}</b></td>
+      <td class="${w === 2 ? 'ev-free-win' : ''}">${htmlEsc(nm(t.side2_entry_id))} ＋ ${htmlEsc(nm(t.side2_entry2_id))}</td>
+      ${ro ? '' : `<td><button class="danger" style="font-size:11px;padding:2px 8px"
+        onclick="evDeleteFreeMatch(${d.edition.id},${t.id})">删除</button></td>`}</tr>`;
+  });
+  return h + '</tbody></table></div>';
 }
 
 // ---------------- 录入 ----------------
@@ -3268,13 +4005,15 @@ async function evClearTie(editionId, tieId) {
   } catch (e) { alert('清空失败: ' + e.message); }
 }
 
-async function evPickSwap(round, slot, side) {
+// stage 只有 'ko' 与 'lower' 两种：败者组和主签表共用这套换位逻辑。
+async function evPickSwap(round, slot, side, stage) {
+  const st = stage === 'lower' ? 'lower' : 'ko';
   const p = EVS.pick;
-  if (!p || p.ko_round !== round) { EVS.pick = { ko_round: round, slot, side }; evRenderWorkspace(); return; }
+  if (!p || p.stage !== st || p.ko_round !== round) { EVS.pick = { stage: st, ko_round: round, slot, side }; evRenderWorkspace(); return; }
   if (p.slot === slot && p.side === side) { EVS.pick = null; evRenderWorkspace(); return; }
   try {
     await api(`/api/editions/${EVS.detail.edition.id}/ko-swap`, {
-      method: 'POST', body: JSON.stringify({ a: p, b: { ko_round: round, slot, side } })
+      method: 'POST', body: JSON.stringify({ stage: st, a: p, b: { ko_round: round, slot, side } })
     });
     EVS.pick = null;
     await evReload();
@@ -3347,6 +4086,7 @@ function mEvRender() {
   if (!box || !MES.event) return;
   const ev = MES.event;
   const isTeam = ev.kind === 'team';
+  const isFree = ev.format === 'free';
   const gc = ev.group_count || 1, apg = ev.advance_per_group || 1;
   const need = ev.format === 'group_ko' ? Math.max(gc * 2, apg * gc + 1) : 2;
   const editing = !!MES.editionId;
@@ -3380,16 +4120,16 @@ function mEvRender() {
         </div>
       </div>`
     : `<div class="ev-sec">
-        <div class="ev-sec-title">${entryNoun} <span class="ev-hint">每${evEntryUnit(ev.kind)}点一次添加</span></div>
-        <div class="form-row" style="margin-bottom:8px">
+        <div class="ev-sec-title">${entryNoun} <span class="ev-hint">每${evEntryUnit(ev.kind)}点一次添加${isFree ? '　非固搭双打：这里录的是一个个的人，搭档每场临时配' : ''}</span></div>
+        ${isFree ? '' : `<div class="form-row" style="margin-bottom:8px">
           <div class="ev-radios">
             <label class="ev-radio ${MES.singlesSize === 1 ? 'on' : ''}"><input type="radio" name="mev-size" ${MES.singlesSize === 1 ? 'checked' : ''} onchange="mEvSetSize(1)">单打（1 人）</label>
             <label class="ev-radio ${MES.singlesSize === 2 ? 'on' : ''}"><input type="radio" name="mev-size" ${MES.singlesSize === 2 ? 'checked' : ''} onchange="mEvSetSize(2)">双打（2 人）</label>
           </div>
-        </div>
+        </div>`}
         <div class="form-row">
           <select id="mev-p1">${evPlayerOpts()}</select>
-          ${MES.singlesSize === 2 ? `<select id="mev-p2">${evPlayerOpts()}</select>` : ''}
+          ${MES.singlesSize === 2 && !isFree ? `<select id="mev-p2">${evPlayerOpts()}</select>` : ''}
           <button onclick="mEvAddIndividual()">＋ 添加${entryNoun}</button>
         </div>
       </div>`;
@@ -3431,6 +4171,7 @@ function mEvRender() {
       </select>
     </div>
     ${ev.format === 'group_ko' ? `<div class="ev-hint" style="margin:6px 0">小组 ${gc} 组、每组出线 ${apg} 个 —— 本届至少 ${need} ${evEntryUnit(ev.kind)}${entryNoun}</div>` : ''}
+    ${isFree ? `<div class="ev-hint" style="margin:6px 0">${freeKindLabel(ev.free_kind)} · 每场 4 人上场 —— 本届名单至少 4 人，人越多场次越多（6 人 15 场）</div>` : ''}
     ${entryArea}
     <div class="ev-chip-list" id="mev-entry-chips">${entryRows}</div>
     ${groupPick}
@@ -3518,7 +4259,13 @@ function mEvAddIndividual() {
   const p1 = parseInt(document.getElementById('mev-p1').value);
   if (!p1) return alert('请选择选手');
   const players = [p1];
-  if (MES.singlesSize === 2) {
+  // 非固搭双打按项目卡性别：男双不能进女选手、女双不能进男选手（混双不限）
+  if (MES.event && MES.event.format === 'free') {
+    const g = evGenderOf(p1), k = MES.event.free_kind || 'md';
+    if (k === 'md' && g !== 'male') return alert('男双项目只能加男选手');
+    if (k === 'wd' && g !== 'female') return alert('女双项目只能加女选手');
+  }
+  if (MES.singlesSize === 2 && !(MES.event && MES.event.format === 'free')) {
     const p2 = parseInt(document.getElementById('mev-p2').value);
     if (!p2) return alert('双打请选择第二位选手');
     if (p2 === p1) return alert('两位选手不能相同');
@@ -3539,7 +4286,8 @@ function mEvMsg(t, ok) {
 }
 
 async function mEvSave() {
-  if (MES.entries.length < 2) return mEvMsg(`至少需要 2 ${evEntryUnit(MES.event.kind)}${evEntryNoun(MES.event.kind)}`);
+  const minN = MES.event.format === 'free' ? 4 : 2;
+  if (MES.entries.length < minN) return mEvMsg(`至少需要 ${minN} ${evEntryUnit(MES.event.kind)}${evEntryNoun(MES.event.kind)}`);
   const body = {
     edition: parseInt(document.getElementById('mev-edition').value ? MES.editionNo : MES.editionNo) || 1,
     date: document.getElementById('mev-date').value,
@@ -3571,6 +4319,15 @@ async function mEvSave() {
 async function mEvGenFixtures() {
   if (!MES.editionId) return;
   const ev = MES.event;
+  // 非固搭双打：把所有人两两搭配的场次一次排出来，已录比分的那几场不动
+  if (ev.format === 'free') {
+    try {
+      mEvMsg('生成中...', true);
+      const r = await api('/api/editions/' + MES.editionId + '/free-generate', { method: 'POST', body: '{}' });
+      mEvMsg(`✅ 已补 ${r.added} 场（本届共 ${r.total} 场），点「打开工作台」录比分。`, true);
+    } catch (e) { mEvMsg(e.message); }
+    return;
+  }
   // 生成会清空小组赛/淘汰赛全部比分，已经有对阵时必须先确认 —— 否则一点就把成绩抹了
   if (MES.tieCount > 0 && !confirm(`本届已有 ${MES.tieCount} 场对阵。\n重新生成会清空所有已录的比分，确定继续？`)) return;
   try {
