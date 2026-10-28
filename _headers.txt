@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Cache-Control: no-cache, must-revalidate
+Accept-Ranges: bytes
+Last-Modified: Tue, 27 Oct 2026 15:20:14 GMT
+ETag: W/"439cf-1a17df29e00"
+Content-Type: application/javascript; charset=UTF-8
+Content-Length: 276943
+Date: Tue, 27 Oct 2026 15:39:04 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+

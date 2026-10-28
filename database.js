@@ -39,7 +39,8 @@ function createTables() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
     type TEXT NOT NULL,
-    level INTEGER NOT NULL DEFAULT 1000
+    level INTEGER NOT NULL DEFAULT 1000,
+    description TEXT DEFAULT ''
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS rounds (
@@ -79,6 +80,19 @@ function createTables() {
     value TEXT NOT NULL
   )`);
 
+  // 日志表：赛事日志（赛事添加/轮次创建/排名变化）+ 操作日志（选手信息变更）。
+  // 积分衰减不落库 —— 它由日期驱动、可完整派生（见 server.js computeDecayLog），
+  // 落库反而要处理补算/对不上的问题。action 取值：
+  //   tournament_add / round_add / rank_change / player_add / player_update / player_delete
+  db.run(`CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`);
+
   // Add edition column if upgrading from old schema
   try { db.run(`ALTER TABLE rounds ADD COLUMN edition INTEGER NOT NULL DEFAULT 1`); } catch(e) {}
   try { db.run(`ALTER TABLE players ADD COLUMN bio TEXT DEFAULT ''`); } catch(e) {}
@@ -86,6 +100,7 @@ function createTables() {
   try { db.run(`ALTER TABLE players ADD COLUMN real_name TEXT DEFAULT ''`); } catch(e) {}
   try { db.run(`ALTER TABLE tournaments ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
   try { db.run(`ALTER TABLE tournaments ADD COLUMN icon TEXT DEFAULT ''`); } catch(e) {}
+  try { db.run(`ALTER TABLE tournaments ADD COLUMN description TEXT DEFAULT ''`); } catch(e) {}
   try { db.run(`ALTER TABLE rounds ADD COLUMN level INTEGER NOT NULL DEFAULT 1000`); } catch(e) {}
   try { db.run(`ALTER TABLE players ADD COLUMN partner1_id INTEGER DEFAULT NULL`); } catch(e) {}
   try { db.run(`ALTER TABLE players ADD COLUMN partner2_id INTEGER DEFAULT NULL`); } catch(e) {}
@@ -171,6 +186,8 @@ function migrateEventEditions() {
   addCol('event_editions', 'lower_bracket', 'INTEGER');
   // 非固搭双打：项目 + 对阵两侧各自的第二位搭档
   addCol('events', 'free_kind', "TEXT NOT NULL DEFAULT 'md'");
+  // 单项赛（非固搭）的项目类型：男单/女单=1 人、男双/女双/混双=2 人。录名单时据此锁定单打/双打。
+  addCol('events', 'type', "TEXT NOT NULL DEFAULT ''");
   addCol('event_ties', 'side1_entry2_id', 'INTEGER');
   addCol('event_ties', 'side2_entry2_id', 'INTEGER');
   // 种子排名定格值：生成分组 / 生成签表那一刻写入，之后比分引起的积分变化不会改动它，
@@ -238,6 +255,7 @@ function createEventTables() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     kind TEXT NOT NULL,                       -- individual | team
+    type TEXT NOT NULL DEFAULT '',            -- 单项赛（非固搭）项目类型：singles/womens_singles/mens_doubles/womens_doubles/mixed_doubles；'' = 未指定（legacy，本届录入时临时选单打/双打）
     format TEXT NOT NULL,                     -- rr 单循环 | ko 淘汰 | group_ko 小组+淘汰
     best_of INTEGER NOT NULL DEFAULT 3,       -- 1 一局定胜负 | 3 三局两胜
     level INTEGER NOT NULL DEFAULT 1000,      -- 已废弃：级别改按届存（老库列保留，只为不破坏旧结构）
@@ -339,6 +357,27 @@ function createEventTables() {
     s1 INTEGER NOT NULL DEFAULT 0,
     s2 INTEGER NOT NULL DEFAULT 0
   )`);
+
+  // 赛制模板：「怎么打」的预设快照。建赛事时一键填充，之后可手动应用到已有赛事。
+  // 刻意不做外键绑定 —— 混双/男单这类同品牌两个项目的配置迟早分叉
+  // （6 队和 8 人，小组数/出线数/败者组资格都不一样），自动同步迟早帮倒忙。
+  db.run(`CREATE TABLE IF NOT EXISTS event_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    format TEXT NOT NULL,
+    best_of INTEGER NOT NULL DEFAULT 3,
+    free_kind TEXT NOT NULL DEFAULT 'md',
+    third_place INTEGER NOT NULL DEFAULT 0,
+    lower_bracket INTEGER NOT NULL DEFAULT 0,
+    group_count INTEGER NOT NULL DEFAULT 0,
+    advance_per_group INTEGER NOT NULL DEFAULT 0,
+    seed_by TEXT NOT NULL DEFAULT 'entry',
+    group_mode TEXT NOT NULL DEFAULT 'snake',
+    ko_mode TEXT NOT NULL DEFAULT 'seed',
+    items TEXT NOT NULL DEFAULT '',            -- 团体项目顺序 JSON（仅 kind=team 有意义）
+    created_at TEXT DEFAULT ''
+  )`)
 }
 
 function seedTournaments() {

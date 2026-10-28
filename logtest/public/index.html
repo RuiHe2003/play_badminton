@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>羽毛球积分系统</title>
+  <link rel="stylesheet" href="/style.css?v=75">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
+</head>
+<body>
+  <nav id="nav">
+    <div class="nav-brand">🏸 羽毛球积分系统</div>
+    <div class="nav-links">
+      <a href="#" data-tab="home">首页</a>
+      <a href="#" data-tab="rankings">积分排名</a>
+      <a href="#" data-tab="query">赛事查询</a>
+      <a href="#" data-tab="player-query">选手查询</a>
+      <a href="#" data-tab="headtohead">对阵查询</a>
+      <a href="#" data-tab="admin" class="danger-tab">赛事管理</a>
+    </div>
+  </nav>
+
+  <div id="admin-subnav">
+    <a href="#" data-subtab="players" class="active">👤 选手管理</a>
+    <a href="#" data-subtab="matches">🏟️ 比赛管理</a>
+    <a href="#" data-subtab="events">➕ 创建赛事</a>
+    <a href="#" data-subtab="logs">📋 日志</a>
+  </div>
+
+  <div class="container">
+    <!-- 首页 -->
+    <div id="tab-home" class="tab active">
+      <div id="home-content"></div>
+    </div>
+
+    <!-- 赛事管理（密码验证在此标签页内） -->
+    <div id="tab-admin" class="tab"></div>
+
+    <!-- 选手管理 -->
+    <div id="tab-players" class="tab">
+      <h2>👤 选手管理</h2>
+      <div class="card">
+        <h3>添加选手</h3>
+        <div class="form-row">
+          <input type="text" id="player-name" placeholder="比赛ID">
+          <input type="text" id="player-real-name" placeholder="姓名（可选）">
+          <select id="player-gender"><option value="">选择性别</option><option value="male">男</option><option value="female">女</option></select>
+          <button onclick="addPlayer()">添加</button>
+        </div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">选手列表</h3>
+        <button class="secondary" id="btn-backfill-mates" onclick="backfillDefaultMates()">🧮 补默认对手/搭档</button>
+        <span style="font-size:12px;color:#a0aec0">给没设置过的人自动填交手/搭档最多的前 3 个，已设置的不动</span>
+      </div>
+      <div class="card"><div id="player-list"></div></div>
+    </div>
+
+    <!-- 比赛管理 -->
+    <div id="tab-matches" class="tab">
+      <h2>🏟️ 比赛管理</h2>
+      <div class="card" id="create-round-card">
+        <h3>📋 创建新轮次</h3>
+        <div class="form-row">
+          <select id="round-tournament"><option value="">选择赛事</option></select>
+          <input type="number" id="round-edition" placeholder="输入届数" min="1" value="1">
+          <input type="date" id="round-date">
+          <select id="round-level">
+            <option value="1000">1000级</option>
+            <option value="750">750级</option>
+            <option value="500">500级</option>
+            <option value="300">300级</option>
+          </select>
+          <button id="save-edition-btn" onclick="saveRoundChanges()" style="display:none">💾 保存</button>
+          <span id="save-round-status" style="margin-left:4px;font-size:13px;color:#38a169"></span>
+        </div>
+        <div id="tournament-icon-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <strong style="min-width:60px;font-size:14px">赛事图标：</strong>
+          <div id="t-icon-preview" title="点击上传/更换图标" onclick="document.getElementById('tournament-icon-input').click()" style="width:48px;height:48px;border-radius:8px;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:20px;color:#a0aec0;cursor:pointer;overflow:hidden;flex-shrink:0;border:1px dashed #cbd5e0">🏸</div>
+          <span id="t-icon-hint" style="flex:1;min-width:120px;font-size:13px;color:#718096">请先选择赛事</span>
+          <button onclick="document.getElementById('tournament-icon-input').click()">📁 上传图片</button>
+          <button class="danger" onclick="removeTournamentIcon()" id="t-icon-del-btn" style="display:none">🗑️ 移除</button>
+          <span id="t-icon-status" style="font-size:13px;color:#38a169"></span>
+          <input id="tournament-icon-input" type="file" accept="image/*" style="display:none" onchange="uploadTournamentIcon(this)">
+        </div>
+        <div id="tournament-desc-row" style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-top:10px;padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <strong style="min-width:60px;font-size:14px;line-height:34px">赛事介绍：</strong>
+          <textarea id="tournament-desc-input" rows="2" maxlength="200" placeholder="请先选择赛事" style="flex:1;min-width:220px;padding:7px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical"></textarea>
+          <button onclick="saveTournamentDesc()" style="line-height:1">💾 保存介绍</button>
+          <span id="t-desc-status" style="font-size:13px;color:#38a169;line-height:34px"></span>
+        </div>
+        <div id="existing-round-info" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #f6e05e;border-radius:6px;font-size:14px">
+          🔔 该赛事此届已有轮次，<a href="#" onclick="loadExistingRound();return false" style="color:#d69e2e;font-weight:600">点击此处加载已有轮次进行比分编辑</a>
+        </div>
+        <!-- 新赛制赛事（「创建赛事」建的）：日期 / 级别 / 参赛名单按届录入 -->
+        <div id="ev-edition-card" class="card" style="display:none"></div>
+        <div id="ev-workspace-match" style="display:none"></div>
+        <div id="participant-area">
+          <div class="form-row">
+            <strong style="min-width:60px">参赛者：</strong>
+            <span id="participant-pick" style="flex:1;display:flex;gap:10px;flex-wrap:wrap"></span>
+            <button onclick="addParticipant()">添加</button>
+          </div>
+          <div id="participant-list"></div>
+          <div class="form-row" id="round-actions" style="display:none;margin-top:8px">
+            <button onclick="createAndShowFixtures()">⚡ 生成对阵表</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="fixture-card" style="display:none">
+        <h3>🏟️ <span id="fixture-title">对阵表</span></h3>
+        <div id="fixture-form"></div>
+        <div style="margin-top:12px;text-align:right">
+          <button onclick="saveAllMatches()">💾 保存所有比分</button>
+          <span id="save-all-status" style="margin-left:8px;font-size:13px"></span>
+        </div>
+      </div>
+      <div class="card" id="live-rank-card" style="display:none">
+        <h3>📊 实时排名</h3>
+        <div id="live-rankings"></div>
+      </div>
+      <div class="card" id="free-match-card" style="display:none">
+        <h3>🎯 手动录入比赛</h3>
+        <div id="fm-round-info">
+          <div class="form-row">
+            <button onclick="createFreeRound()" id="fm-create-btn">📋 创建轮次</button>
+            <span id="fm-round-status" style="margin-left:8px;font-size:13px"></span>
+          </div>
+        </div>
+        <div id="fm-entry-area" style="display:none">
+          <div style="margin-bottom:8px">
+            <button class="danger" onclick="deleteFreeRound()">🗑️ 删除该轮</button>
+            <span id="fm-delete-status" style="margin-left:8px;font-size:13px"></span>
+          </div>
+          <div class="form-row">
+            <span id="fm-pick1"></span>
+            <span id="fm-pick2"></span>
+            <span style="margin:0 4px">VS</span>
+            <span id="fm-pick3"></span>
+            <span id="fm-pick4"></span>
+          </div>
+          <div class="form-row" style="margin-top:6px">
+            <input type="number" id="fm-s1" placeholder="比分" min="0" max="31" style="width:60px">
+            <span style="margin:0 4px">:</span>
+            <input type="number" id="fm-s2" placeholder="比分" min="0" max="31" style="width:60px">
+            <button onclick="saveFreeMatch()">✅ 录入</button>
+            <span id="fm-status" style="margin-left:8px;font-size:13px"></span>
+          </div>
+          <div id="free-match-list" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创建赛事（新版赛事引擎：小组循环 / 淘汰签表 / 团体对抗） -->
+    <div id="tab-events" class="tab">
+      <h2>➕ 创建赛事</h2>
+      <div id="event-page"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 积分排名 -->
+    <div id="tab-rankings" class="tab">
+      <h2>🏆 积分排名</h2>
+      <div id="rankings-content"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 赛事查询：图标网格列表页 -->
+    <div id="tab-query" class="tab">
+      <div class="query-head">
+        <span id="query-tour-icon" class="query-tour-icon-slot"></span>
+        <h2>赛事查询</h2>
+      </div>
+      <div class="card">
+        <div class="form-row">
+          <select id="query-tournament"><option value="">全部赛事</option></select>
+          <input type="number" id="query-edition" placeholder="届数（可选）" min="1">
+          <button onclick="queryRounds()">查询</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="query-tour-grid" class="tour-grid"></div>
+      </div>
+      <div id="query-results"></div>
+    </div>
+
+    <!-- 赛事详情：点图标后跳转到这里，取代原先在网格下方展开的做法 -->
+    <div id="tab-tour-detail" class="tab">
+      <div class="detail-head">
+        <button class="back-btn" onclick="closeTourDetail()" title="返回赛事列表">
+          <span class="back-arrow" aria-hidden="true"></span>返回
+        </button>
+        <h2 id="detail-tour-title">赛事详情</h2>
+        <div id="detail-tour-desc" class="detail-tour-desc" style="display:none"></div>
+      </div>
+      <div id="tour-detail-body"></div>
+    </div>
+
+    <!-- 选手查询 -->
+    <div id="tab-player-query" class="tab">
+      <h2>🔍 选手查询</h2>
+      <div class="card">
+        <div class="form-row">
+          <div class="ac-wrap">
+            <input type="text" id="query-player-name" placeholder="输入比赛ID或姓名" autocomplete="off"
+                   oninput="onPlayerSuggest('query-player-name')"
+                   onfocus="onPlayerSuggest('query-player-name')"
+                   onkeydown="if(onPlayerSuggestKey(event,'query-player-name'))return; if(event.key==='Enter')queryPlayer()">
+            <div class="ac-list" id="ac-query-player-name"></div>
+          </div>
+          <button onclick="queryPlayer()">查询</button>
+        </div>
+      </div>
+      <div id="player-result"></div>
+    </div>
+
+    <!-- 对阵查询 -->
+    <div id="tab-headtohead" class="tab">
+      <h2>⚔️ 对阵查询</h2>
+      <div class="card">
+        <div class="h2h-form">
+          <div class="h2h-team">
+            <span class="h2h-team-label">A 方</span>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-a1" placeholder="选手A姓名" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-a1')"
+                     onfocus="onPlayerSuggest('h2h-a1')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-a1')">
+              <div class="ac-list" id="ac-h2h-a1"></div>
+            </div>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-a2" placeholder="搭档（可选）" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-a2')"
+                     onfocus="onPlayerSuggest('h2h-a2')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-a2')">
+              <div class="ac-list" id="ac-h2h-a2"></div>
+            </div>
+          </div>
+          <span class="h2h-vs-badge">VS</span>
+          <div class="h2h-team">
+            <span class="h2h-team-label">B 方</span>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-b1" placeholder="选手B姓名" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-b1')"
+                     onfocus="onPlayerSuggest('h2h-b1')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-b1')">
+              <div class="ac-list" id="ac-h2h-b1"></div>
+            </div>
+            <div class="ac-wrap">
+              <input type="text" id="h2h-b2" placeholder="搭档（可选）" autocomplete="off"
+                     oninput="onPlayerSuggest('h2h-b2')"
+                     onfocus="onPlayerSuggest('h2h-b2')"
+                     onkeydown="onPlayerSuggestKey(event, 'h2h-b2')">
+              <div class="ac-list" id="ac-h2h-b2"></div>
+            </div>
+          </div>
+          <button onclick="queryHeadToHead()">查询</button>
+        </div>
+        <div class="h2h-tip">填 2 人 = 单打交手；填 3~4 人 = 双打（A 方两人搭档，对阵 B 方两人搭档）</div>
+      </div>
+      <div id="h2h-result"></div>
+    </div>
+  </div>
+
+  <div id="tab-logs" class="tab">
+    <h2>📋 日志</h2>
+
+    <div class="card">
+      <div class="log-card-head">
+        <h3>📅 赛历查询</h3>
+        <div class="log-cal-form">
+          <select id="log-cal-year"></select>
+          <button onclick="loadLogCalendar()">查询</button>
+        </div>
+      </div>
+      <div id="log-cal-list" class="log-list"><div class="log-empty">加载中…</div></div>
+      <div class="log-more-wrap"><button class="secondary" id="log-cal-more" style="display:none" onclick="toggleCalExpand()"></button></div>
+    </div>
+
+    <div class="card">
+      <div class="log-card-head">
+        <h3>🔧 操作日志</h3>
+        <div class="log-filters" id="log-op-filters">
+          <button class="log-chip active" data-action="">全部</button>
+          <button class="log-chip" data-action="tournament_add">赛事添加</button>
+          <button class="log-chip" data-action="tournament_delete">赛事删除</button>
+          <button class="log-chip" data-action="edition_add">届次创建</button>
+          <button class="log-chip" data-action="edition_update">届次修改</button>
+          <button class="log-chip" data-action="match_add">比分录入</button>
+          <button class="log-chip" data-action="match_update">比分修改</button>
+          <!-- 以下低频筛选项默认收起：17 个 chip 平铺会把卡片头撑成三行，和哥嫌乱 -->
+          <button class="log-chip log-chip-rare" data-action="edition_delete">届次删除</button>
+          <button class="log-chip log-chip-rare" data-action="round_add">轮次创建</button>
+          <button class="log-chip log-chip-rare" data-action="round_update">轮次修改</button>
+          <button class="log-chip log-chip-rare" data-action="round_delete">轮次删除</button>
+          <button class="log-chip log-chip-rare" data-action="match_delete">比分删除</button>
+          <button class="log-chip log-chip-rare" data-action="groups_set">分组调整</button>
+          <button class="log-chip log-chip-rare" data-action="fixture_generate">对阵生成</button>
+          <button class="log-chip log-chip-rare" data-action="ko_swap">签表调整</button>
+          <button class="log-chip log-chip-rare" data-action="player_add">选手添加</button>
+          <button class="log-chip log-chip-rare" data-action="player_update">信息更新</button>
+          <button class="log-chip log-chip-rare" data-action="player_delete">选手删除</button>
+          <button class="log-chip-more" id="log-op-more-filters" onclick="toggleLogFilters(this)">更多筛选 ▾</button>
+        </div>
+        <label class="log-check log-check-all" title="全选当前筛选下的全部日志"><input type="checkbox" id="log-op-check-all" onchange="onLogCheckAll(this)">全选</label>
+        <button class="log-del-btn" id="log-op-del" disabled onclick="deleteSelectedLogs()">🗑 删除选中</button>
+      </div>
+      <div id="log-op-list" class="log-list"><div class="log-empty">加载中…</div></div>
+      <div class="log-more-wrap"><button class="secondary" id="log-op-more" style="display:none" onclick="toggleOpExpand()"></button></div>
+    </div>
+
+    <div class="card">
+      <div class="log-card-head">
+        <h3>📅 历史排名查询</h3>
+      </div>
+      <div class="log-rank-form">
+        <input type="date" id="log-rank-date">
+        <button onclick="queryRankSnapshot()">查询该日排名</button>
+        <span class="log-rank-hint">不填＝当前排名；积分衰减按所查日期结算</span>
+      </div>
+      <div id="log-rank-result"></div>
+    </div>
+  </div>
+
+  <div id="crop-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;padding:24px;max-width:90vw;max-height:90vh;display:flex;flex-direction:column">
+      <h3 style="margin-bottom:12px">✂️ 裁剪头像</h3>
+      <div id="crop-container" style="max-width:600px;max-height:60vh;overflow:hidden">
+        <img id="crop-image" src="">
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="secondary" onclick="closeCropModal()">取消</button>
+        <button onclick="confirmCrop()">✅ 确认上传</button>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
+  <script src="/app.js?v=100"></script>
+</body>
+</html>

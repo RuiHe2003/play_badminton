@@ -82,6 +82,13 @@ h4 { font-size: 14px; margin-bottom: 8px; color: #4a5568; }
 .ac-empty { padding: 10px 12px; font-size: 13px; color: #a0aec0; }
 /* 高亮命中片段，让用户一眼看到匹配在哪 */
 .ac-hl { color: #276749; background: #c6f6d5; border-radius: 3px; padding: 0 1px; }
+/* 管理端选手联想选择器：输入姓名 / 备注名 / ID 均可，选中项右侧显示选手 ID */
+.ev-ppick { position: relative; flex: 1; min-width: 150px; }
+.ev-ppick-in { width: 100%; box-sizing: border-box; padding: 8px 12px;
+  border: 1px solid #d2d6dc; border-radius: 6px; font-size: 14px; outline: none; background: #fff;
+  transition: border-color .15s, box-shadow .15s; }
+.ev-ppick-in:focus { border-color: #48bb78; box-shadow: 0 0 0 3px rgba(72,187,120,.1); }
+.ac-pid { font-size: 11px; color: #a0aec0; margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
 
 button { padding: 8px 20px; background: #48bb78; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
 button:hover { background: #38a169; }
@@ -128,6 +135,12 @@ tr:hover { background: #f7fafc; }
 .stat-mod:last-child { border-right: none; }
 .stat-mod-honor { flex: 1.7; cursor: pointer; position: relative; border-radius: 8px; transition: background .15s; }
 .stat-mod-honor:hover { background: #f0fff4; }
+/* 「年度最高」模块：整块可点，跳转历史排名曲线页（与荣誉块同款交互）。
+   曲线入口折叠在模块里：底部一行小字提示可点，不占主视觉。 */
+.stat-mod-link { cursor: pointer; border-radius: 8px; transition: background .15s; }
+.stat-mod-link:hover { background: #ebf8ff; }
+.stat-link-hint { font-size: 11px; color: #2b6cb0; margin-top: 4px; letter-spacing: 1px; }
+.stat-mod-link:hover .stat-link-hint { color: #2c5282; text-decoration: underline; }
 .stat-value { font-size: 28px; font-weight: 700; color: #2d3748; line-height: 1.1; }
 .stat-unit { font-size: 16px; font-weight: 600; margin-left: 1px; }
 /* 总场次 + 胜场 在同一块里并排显示。
@@ -237,10 +250,49 @@ body:has(#tab-home.active) .container { padding: 0; }
 .home-card-body { font-size: 22px; line-height: 1.8; color: #2d3748; }
 .intro-card { background: linear-gradient(135deg, #f0fff4 0%, #ebf8ff 100%); border-left: 4px solid #48bb78; }
 .rules-card { background: linear-gradient(135deg, #fffbeb 0%, #fefcbf 100%); border-left: 4px solid #d69e2e; }
-.rules-card .home-card-body { display: flex; gap: 16px; }
+/* 积分规则卡：竖排列表，一行一条，长文案也读得顺（手机上本来就是竖排） */
+.rules-card .home-card-body { display: flex; flex-direction: column; gap: 10px; }
+.rules-card .rule-item { background: rgba(255,255,255,0.55); }
+.rule-prose { line-height: 2; text-align: justify; }
 .rule-item { flex: 1; background: rgba(255,255,255,0.5); border-radius: 8px; padding: 10px 14px; }
 .rule-label { font-size: 18px; font-weight: 700; color: #d69e2e; margin-bottom: 6px; }
 .rule-desc { font-size: 16px; line-height: 1.6; color: #4a5568; }
+
+/* 首页「积分规则」里的术语按钮 + 点开后的解释层。
+   正文每行只留一句结论，名词解释折进按钮里 —— 直接铺在正文会长到没人看。 */
+.term-btn {
+  display: inline-block; padding: 0 9px; margin: 0 1px;
+  font-family: inherit; font-size: 15px; line-height: 1.7;
+  color: #2b6cb0; background: #e6f1fb; border: 1px solid #90cdf4; border-radius: 999px;
+  cursor: pointer; vertical-align: baseline;
+}
+.term-btn:hover { background: #bee3f8; border-color: #2b6cb0; }
+.term-btn::after { content: '?'; margin-left: 3px; font-size: 11px; opacity: 0.7; }
+/* 「积分细则 / 削减细则」入口按钮：比术语按钮略重、不带问号，
+   字号用 em 随正文缩放（桌面正文 22px / 手机 16px） */
+.detail-btn {
+  display: inline-block; padding: 0 12px; margin: 0 2px;
+  font-family: inherit; font-size: 0.85em; line-height: 1.7; font-weight: 600;
+  color: #2b6cb0; background: #e6f1fb; border: 1px solid #90cdf4; border-radius: 999px;
+  cursor: pointer; vertical-align: baseline;
+}
+.detail-btn:hover { background: #bee3f8; border-color: #2b6cb0; }
+.term-mask {
+  position: fixed; inset: 0; z-index: 3000; padding: 20px;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: flex-start; overflow-y: auto;
+}
+.term-card { background: #fff; border-radius: 12px; padding: 18px 20px; max-width: 440px; width: 100%; margin: auto; }
+.term-card-title { font-size: 18px; font-weight: 700; color: #1a202c; margin-bottom: 10px; }
+.term-card-body { font-size: 15px; line-height: 1.75; color: #4a5568; }
+.term-card-body b { color: #1a202c; }
+.term-card-body code { background: #edf2f7; padding: 1px 5px; border-radius: 4px; font-size: 14px; color: #2b6cb0; }
+.term-close {
+  margin-top: 16px; width: 100%; padding: 10px;
+  background: #2b6cb0; color: #fff; border: none; border-radius: 8px;
+  font-family: inherit; font-size: 15px; cursor: pointer;
+}
+.term-close:hover { background: #1a4a7a; }
 
 .player-avatar { position: relative; }
 .player-avatar:hover img, .player-avatar:hover div:first-child { opacity: 0.8; }
@@ -264,6 +316,10 @@ body:has(#tab-home.active) .container { padding: 0; }
   .home-card-body { font-size: 16px; }
   .home-card { padding: 10px 14px; }
   .rules-card .home-card-body { flex-direction: column; gap: 8px; }
+  /* 手机端首页改「自然滚动」：竖排 nav 实测约 107px 高，tab 仍按桌面的 calc(100vh-57px)
+     算高度会比视口底部还多出 ~50px，形成「tab 内滚动 + 页面滚动」双重滚动；
+     何况规则卡五条这么长，本就不该陷在嵌套滚动里。nav 是 sticky 的，页面滚它不跑。 */
+  #tab-home.active { height: auto; overflow: visible; }
   .player-stat-card .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .player-stat-card { padding: 14px; }
   /* 平板：四项模块收窄，荣誉块仍保留更宽的配额 */
@@ -371,6 +427,21 @@ body:has(#tab-home.active) .container { padding: 0; }
    支持的浏览器由文件末尾的 @supports 交给 aspect-ratio 算，保证它也是正方。 */
 .tile-icon-ph { border-radius: 12px; background: #e2e8f0; color: #a0aec0; height: 165px;
   display: flex; align-items: center; justify-content: center; font-size: 52px; }
+/* 同品牌多赛事（如总决赛男单/混双）的合成图标：右上角数字角标 + 点击后的项目选择弹窗 */
+.tour-tile { position: relative; }
+.tile-count { position: absolute; top: 6px; right: 6px; background: #48bb78; color: #fff;
+  font-size: 12px; line-height: 1; padding: 3px 6px; border-radius: 10px; font-weight: 700; }
+.bp-panel { background: #fff; border-radius: 16px; padding: 20px 22px; width: min(360px, 90vw);
+  max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+.bp-title { font-size: 16px; font-weight: 700; margin-bottom: 14px; text-align: center; color: #2d3748; }
+.bp-items { display: flex; flex-direction: column; gap: 10px; }
+.bp-item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid #e2e8f0;
+  border-radius: 12px; background: #fff; cursor: pointer; font-size: 15px; color: #2d3748; text-align: left; }
+.bp-item:hover { border-color: #48bb78; background: #f0fff4; }
+.bp-item img { width: 48px; height: 48px; border-radius: 10px; object-fit: cover; }
+.bp-cancel { margin-top: 16px; width: 100%; padding: 10px; border: none; border-radius: 10px;
+  background: #edf2f7; color: #4a5568; cursor: pointer; font-size: 14px; }
+.bp-cancel:hover { background: #e2e8f0; }
 
 /* 赛事查询页左上角：当前选中赛事的图标，尺寸与积分排名页赛事图标同为 3em 档（42/36/33px） */
 .query-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
@@ -381,8 +452,14 @@ body:has(#tab-home.active) .container { padding: 0; }
 .query-tour-icon-ph { background: #e2e8f0; color: #a0aec0; text-align: center; line-height: 58px; font-size: 26px; }
 
 /* 赛事详情页顶部：返回键 + 赛事图标 + 标题，同一行 */
-.detail-head { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-.detail-head h2 { margin-bottom: 0; }
+/* 赛事详情页顶部：返回键 + 赛事名 + 赛事介绍。
+   flex-wrap 必须常开（不只手机）：介绍是 flex-basis:100% 的整行项，
+   nowrap 下它会被 flex-shrink 压成和标题同行，把标题挤成两行（2026-10-21 实测踩坑）。 */
+.detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+/* 标题永不收缩：CJK 的 min-content 是单字，被 sibling 挤压就会「集帅/杯」竖排 */
+.detail-head h2 { margin-bottom: 0; flex: none; }
+/* 赛事介绍：跟在详情页标题下面，独占一行 */
+.detail-tour-desc { flex-basis: 100%; margin-top: -6px; font-size: 16px; line-height: 1.5; color: #4a5568; }
 /* 返回键：箭头用 CSS 边框拼，不依赖 emoji（跨平台渲染不一致，且老 Android 可能缺字形） */
 .back-btn { display: inline-flex; align-items: center; gap: 6px; flex: none;
   padding: 8px 14px; font-size: 14px; font-weight: 500; color: #2d3748;
@@ -466,6 +543,7 @@ body:has(#tab-home.active) .container { padding: 0; }
   .stat-value, .stat-sub-value { font-size: 20px; }
   .stat-unit { font-size: 12px; }
   .stat-honor-arrow { display: none; }
+  .stat-link-hint { font-size: 10px; margin-top: 2px; }
   .stat-honor-line { gap: 8px; }
   .stat-honor-title { font-size: 14px; }
   .stat-honor-sub { font-size: 13px; margin-top: 2px; }
@@ -550,6 +628,13 @@ body:has(#tab-home.active) .container { padding: 0; }
 /* 工作台头部 */
 .ev-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .ev-head h2 { margin-bottom: 0; }
+/* 详情页届次切换栏：查询页（只读，无 head）也要能翻往届，所以独立于 head 渲染 */
+.ev-edition-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.ev-edition-bar-label { font-size: 13px; color: #718096; }
+.ev-edition-bar-hint { font-size: 12px; color: #a0aec0; }
+.ev-edition-switch { font-size: 14px; font-weight: 600; color: #2d3748; padding: 4px 10px;
+  border: 1px solid #cbd5e0; border-radius: 8px; background: #fff; cursor: pointer; max-width: 240px; }
+.ev-edition-switch:hover { border-color: #4299e1; }
 .ev-head-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* 小组积分榜 */
@@ -583,7 +668,11 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-item-res.w1 { color: #2f855a; } .ev-item-res.w2 { color: #2b6cb0; }
 .ev-item-res.skip { color: #a0aec0; }
 .ev-lineup { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.ev-lineup select { padding: 5px 8px; font-size: 13px; border: 1px solid #d2d6dc; border-radius: 6px; background: #fff; }
+.ev-lineup .ev-ppick { flex: none; width: 150px; min-width: 120px; }
+.ev-lineup .ev-ppick-in { padding: 5px 8px; font-size: 13px; }
+/* 狗王杯手动录入：一行四个联想框，固定宽度才放得下（和老下拉的行宽一致） */
+#free-match-card .ev-ppick { flex: none; width: 150px; min-width: 120px; }
+#free-match-card .ev-ppick-in { padding: 5px 8px; font-size: 13px; }
 .ev-games { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
 .ev-game-set { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; color: #718096; }
 .ev-games input { width: 46px; padding: 4px 6px; font-size: 13px; text-align: center;
@@ -648,11 +737,26 @@ body:has(#tab-home.active) .container { padding: 0; }
   padding: 10px 6px; font-size: 13px; line-height: 1.45; background: #fffaf0; border: 1px solid #f6e05e; border-radius: 6px; }
 .bk-champ .bk-empty { color: #cbd5e0; }
 
-/* 季军赛：负者汇合，不是两两合并，不接进主树，单独挂一格 */
-.bk-third { margin-top: 18px; }
-.bk-third-title { font-size: 12px; font-weight: 700; color: #718096; margin-bottom: 6px; }
-.bk-third-match { max-width: 240px; }
+/* 季军赛：负者汇合，不是两两合并，不接进主树，单独挂一格。
+   框宽与主树列严格一致、标题用同款 pill——视觉上是主树的小尾巴，不喧宾夺主 */
+.bk-third { margin-top: 22px; }
+.bk-third-title { margin-bottom: 6px; }
+.bk-third-title span { display: inline-block; background: #f7fafc; border: 1px solid #e2e8f0;
+  border-radius: 999px; padding: 2px 12px; font-size: 12px; font-weight: 700; color: #718096; }
+.bk-third-match { max-width: 168px; }
 .bk-third .bk-m::after, .bk-third .bk-m::before { display: none; }
+/* 败者组小树（5~8 名）：两场名次赛都从两场半决赛各取一人（胜者进 5-6、负者进 7-8），
+   不是标准合并树 —— 中间一条竖直母线，把左边两场和右边两场都连上 */
+.bk-lower-wrap { margin-top: 22px; }
+.bk-lower { gap: 0; }
+.bk-lower .bk-v { display: none; }
+.bk-lower .bk-col:last-child .bk-m::after { display: none; }
+/* 退化场景（轮数不是 2、画不出母线）：恢复列间距、藏掉所有半链接，变成普通分栏 */
+.bk-lower-plain { gap: var(--bk-link); }
+.bk-lower-plain .bk-m::after, .bk-lower-plain .bk-m::before { display: none; }
+.bk-bus { flex: 0 0 var(--bk-link); align-self: stretch; position: relative; }
+.bk-bus::before { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid #cbd5e0; }
+.bk-mcap { font-size: 11px; color: #718096; text-align: center; padding: 1px 0 3px; white-space: nowrap; }
 .ev-slot { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid transparent;
   border-radius: 6px; font-size: 14px; font-weight: 600; color: #2d3748; }
 .ev-slot.empty { color: #cbd5e0; font-weight: 400; }
@@ -756,7 +860,8 @@ body:has(#tab-home.active) .container { padding: 0; }
 
 /* 非固搭双打：录入一场（4 人临时配对 + 比分） */
 .ev-free-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.ev-free-row select { max-width: 170px; padding: 5px 8px; font-size: 13px; }
+.ev-free-row .ev-ppick { max-width: 170px; min-width: 120px; }
+.ev-free-row .ev-ppick-in { padding: 5px 8px; font-size: 13px; }
 .ev-free-row input[type="number"] { width: 76px; padding: 5px 8px; font-size: 14px; text-align: center; }
 .ev-free-side { display: inline-block; min-width: 60px; font-size: 13px; font-weight: 600; color: #4a5568; }
 .ev-free-colon { color: #a0aec0; font-weight: 700; }
@@ -777,6 +882,21 @@ body:has(#tab-home.active) .container { padding: 0; }
 .ev-gp-pts { font-size: 12px; color: #4a5568; white-space: nowrap; }
 .ev-gp-row select { max-width: 110px; padding: 4px 6px; font-size: 13px; }
 
+/* 比赛管理：分组安排默认折叠（默认就是蛇形分组，绝大多数不用改），点标题展开 */
+.ev-fold-sec { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; background: #fcfdfe; }
+.ev-fold-sec > summary { cursor: pointer; font-size: 13px; font-weight: 700; color: #4a5568; list-style: none; }
+.ev-fold-sec > summary::-webkit-details-marker { display: none; }
+.ev-fold-sec > summary::before { content: '▸ '; color: #a0aec0; }
+.ev-fold-sec[open] > summary::before { content: '▾ '; }
+.ev-fold-sec[open] > summary { margin-bottom: 10px; }
+/* 底部只留一个主按钮，删除做成弱化文字链，别再一排按钮糊在一起 */
+.mev-foot { margin-top: 14px; align-items: center; }
+.mev-link { background: none; border: none; color: #a0aec0; font-size: 13px; cursor: pointer; padding: 4px 2px; text-decoration: underline; }
+.mev-link:hover { color: #e53e3e; }
+/* 未保存提示：日期/级别/名单动了但还没入库时提醒 */
+.mev-dirty { font-size: 12.5px; color: #b7791f; background: #fffaf0; border: 1px solid #f6e05e;
+  border-radius: 6px; padding: 6px 10px; margin: 6px 0 0; }
+
 /* 平板/窄桌面（480~860px）：桌面 196px 列会逼出横向滚动，签表单独收紧到紧凑档，
    名字仍完整显示（不动其他组件在 480 档的布局） */
 @media (max-width: 860px) {
@@ -788,6 +908,8 @@ body:has(#tab-home.active) .container { padding: 0; }
   .bk-col-title span { padding: 2px 9px; }
   /* 冠军框：窄列里 13px 字号会长名字折行，降到 12px 并收窄内边距 */
   .bk-champ { font-size: 12px; padding: 8px 5px; }
+  /* 季军赛框与主树列同宽（平板 176px） */
+  .bk-third-match { max-width: 176px; }
 }
 
 @media (max-width: 480px) {
@@ -816,10 +938,72 @@ body:has(#tab-home.active) .container { padding: 0; }
   .h2h-vs-badge { text-align: center; }
   .bk-col { flex-basis: 152px; width: 152px; }
   .bk-col-champ { flex-basis: 118px; width: 118px; }
+  /* 季军赛框与主树列同宽（窄屏 152px），不与主树抢眼 */
+  .bk-third-match { max-width: 152px; }
   .bk-row { font-size: 12px; padding: 4px 6px; gap: 4px; }
   .bk-seed { min-width: 16px; padding: 0 3px; font-size: 9.5px; line-height: 14px; }
   .bk-sc { min-width: 38px; font-size: 11px; }
   .bk-col-title span { padding: 2px 9px; }
   .bk-name .bk-n2 { padding-left: 10px; }
   .bk-champ { font-size: 12px; padding: 8px 5px; }
+}
+
+/* ==================== 日志页 ==================== */
+.log-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.log-card-head h3 { margin-bottom: 0; }
+.log-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.log-chip { border: 1px solid #e2e8f0; background: #fff; color: #4a5568; border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; line-height: 1.5; }
+.log-chip:hover { border-color: #a0aec0; }
+.log-chip.active { background: #2b6cb0; border-color: #2b6cb0; color: #fff; }
+.log-list { display: flex; flex-direction: column; gap: 8px; }
+.log-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: #fff; display: flex; gap: 10px; align-items: flex-start; }
+.log-check { display: flex; align-items: center; padding-top: 3px; cursor: pointer; }
+.log-check input { width: 16px; height: 16px; cursor: pointer; }
+.log-check-all { padding-top: 0; flex: none; }
+.log-item-body { flex: 1; min-width: 0; }
+.log-del-btn { border: 1px solid #e2e8f0; background: #fff; color: #e53e3e; border-radius: 8px; padding: 4px 12px; font-size: 13px; cursor: pointer; line-height: 1.5; white-space: nowrap; }
+.log-del-btn:hover:not(:disabled) { border-color: #e53e3e; background: #fff5f5; }
+.log-del-btn:disabled { color: #a0aec0; cursor: not-allowed; }
+.log-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.log-badge { font-size: 12px; border-radius: 4px; padding: 2px 8px; font-weight: 600; white-space: nowrap; }
+.log-badge-tournament_add, .log-badge-player_add,
+.log-badge-match_add, .log-badge-edition_add { background: #ebf8ff; color: #2b6cb0; }
+.log-badge-tournament_delete, .log-badge-player_delete,
+.log-badge-edition_delete, .log-badge-round_delete,
+.log-badge-match_delete { background: #fff5f5; color: #e53e3e; }
+.log-badge-player_update, .log-badge-edition_update, .log-badge-round_update,
+.log-badge-match_update { background: #e9d8fd; color: #6b46c1; }
+.log-badge-round_add { background: #f0fff4; color: #276749; }
+.log-badge-groups_set, .log-badge-fixture_generate,
+.log-badge-ko_swap { background: #f0fff4; color: #276749; }
+.log-badge-edition_move { background: #fffaf0; color: #b7791f; }
+.log-badge-template_manage { background: #e6fffa; color: #234e52; }
+/* 低频筛选项折叠：默认只留常用的几个，点「更多筛选」展开 */
+.log-chip-rare { display: none; }
+.log-filters.rare-open .log-chip-rare { display: inline-block; }
+.log-chip-more { border: 1px dashed #cbd5e0; background: transparent; color: #718096; border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; line-height: 1.5; white-space: nowrap; }
+.log-chip-more:hover { border-color: #718096; color: #2d3748; }
+.log-badge-decay { background: #fffaf0; color: #b7791f; }
+/* 日志列表折叠：默认只显示前 2 条，其余隐藏，点底部按钮展开 */
+.log-fold-hidden { display: none; }
+/* 赛历查询：一届一行，衰减事件一行 */
+.log-cal-form { display: flex; gap: 8px; align-items: center; }
+.log-cal-form select { border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 10px; font-size: 14px; background: #fff; color: #2d3748; }
+.cal-item { align-items: center; }
+.cal-date { flex: none; width: 92px; font-size: 13px; color: #4a5568; font-variant-numeric: tabular-nums; }
+.cal-decay { background: #fffdf7; border-style: dashed; }
+.cal-decay-tip { margin-top: 4px; font-size: 13px; color: #b7791f; }
+.log-time { font-size: 12px; color: #a0aec0; white-space: nowrap; }
+.log-summary { font-size: 14px; color: #2d3748; line-height: 1.6; word-break: break-all; }
+.log-empty { text-align: center; color: #a0aec0; font-size: 14px; padding: 20px 0; }
+.log-more-wrap { text-align: center; margin-top: 10px; }
+.log-rank-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.log-rank-form input[type="date"] { padding: 8px 12px; border: 2px solid #d2d6dc; border-radius: 8px; font-size: 14px; }
+.log-rank-hint { font-size: 12px; color: #a0aec0; }
+.log-rank-meta { font-size: 14px; color: #4a5568; margin-bottom: 10px; font-weight: 600; }
+.log-rank-block h4 { margin: 10px 0 8px; }
+
+@media (max-width: 768px) {
+  .log-card-head { flex-direction: column; align-items: flex-start; }
+  .log-filters { width: 100%; }
 }

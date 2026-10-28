@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>历史排名曲线</title>
+<link rel="stylesheet" href="/style.css?v=63">
+<style>
+  /* 历史排名曲线页：独立页面，样式全部内联在这里，不污染全局 style.css */
+  body.chart-page { background: #f7fafc; margin: 0; min-height: 100vh; }
+  .chart-topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+    background: #fff; border-bottom: 1px solid #e2e8f0; padding: 10px 16px; }
+  .chart-back { color: #2b6cb0; text-decoration: none; font-size: 14px; font-weight: 600;
+    border: 1px solid #bee3f8; border-radius: 8px; padding: 6px 12px; background: #ebf8ff; }
+  .chart-back:hover { background: #bee3f8; }
+  .chart-topbar h1 { font-size: 17px; margin: 0; color: #2d3748; }
+  .chart-main { max-width: 860px; margin: 0 auto; padding: 18px 16px 40px; }
+  .chart-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .chart-name { font-size: 20px; font-weight: 700; color: #2d3748; }
+  .chart-gender { font-size: 12px; font-weight: 600; color: #fff; border-radius: 999px; padding: 3px 10px; }
+  .chart-gender.male { background: #2b6cb0; }
+  .chart-gender.female { background: #d53f8c; }
+  .chart-chip { font-size: 12px; color: #4a5568; background: #fff; border: 1px solid #e2e8f0;
+    border-radius: 999px; padding: 4px 10px; }
+  .chart-chip b { color: #2b6cb0; }
+  .chart-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 10px 6px; }
+  .chart-wrap { width: 100%; }
+  .chart-wrap svg { width: 100%; height: auto; display: block; }
+  .chart-note { font-size: 12px; color: #718096; line-height: 1.7; margin: 12px 2px 0; }
+  .chart-tip { position: fixed; z-index: 50; background: #2d3748; color: #fff; border-radius: 8px;
+    padding: 8px 12px; font-size: 12px; line-height: 1.6; pointer-events: none; max-width: 240px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  .chart-tip .tt-date { color: #a0aec0; font-size: 11px; }
+  .chart-tip .tt-main { font-weight: 600; margin: 1px 0; }
+  .chart-tip .tt-sub { color: #90cdf4; }
+  .chart-state { text-align: center; color: #718096; padding: 60px 0; font-size: 14px; }
+  .chart-state a { color: #2b6cb0; }
+  @media (max-width: 768px) {
+    .chart-main { padding: 14px 8px 32px; }
+    .chart-card { padding: 10px 4px 4px; }
+    .chart-name { font-size: 17px; }
+  }
+</style>
+</head>
+<body class="chart-page">
+<header class="chart-topbar">
+  <a class="chart-back" id="chart-back" href="/">← 返回</a>
+  <h1>历史排名曲线</h1>
+</header>
+<main class="chart-main">
+  <div class="chart-meta" id="chart-meta"></div>
+  <div class="chart-card">
+    <div class="chart-wrap" id="chart-wrap"><div class="chart-state">加载中...</div></div>
+  </div>
+  <p class="chart-note">名次为同性内排名（男/女分榜，与积分排名页一致）。每个数据点是一个事件时点：
+    <b style="color:#2b6cb0">● 蓝点</b>＝打出成绩的轮次（括号内为当时该性别上榜人数，早期上榜人数少、名次含金量相对低）；
+    <b style="color:#d69e2e">▼ 亮黄三角</b>＝停办赛事按时间衰减（停办每满半年扣 1 个当次 d）——tooltip 里写明是哪个站、扣了多少。
+    衰减点可能掉分（自己的站被扣），也可能只变名次（其他选手的站被扣、自己反超），鼠标悬停/触摸即可查看。
+    衰减按站点残值计算，总积分只取前 4 站（男）/前 3 站（女），所以站点扣分合计可能大于总积分降幅。</p>
+</main>
+<div class="chart-tip" id="chart-tip" hidden></div>
+<script src="/chart.js?v=3"></script>
+</body>
+</html>
